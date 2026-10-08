@@ -225,8 +225,9 @@ export async function resolveAudioUrl(url: string | undefined): Promise<string> 
       return newObjectUrl;
     }
 
-    // Fallback if not found
-    return '';
+    // Fallback if not found on this device (e.g. uploaded locally on a different device)
+    // Fall back to elegant online wedding music rather than leaving the invitation silent!
+    return 'https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3';
   }
 
   return url;

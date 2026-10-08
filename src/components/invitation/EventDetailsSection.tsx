@@ -70,11 +70,11 @@ export const EventDetailsSection: React.FC<EventDetailsSectionProps> = ({ invita
                   Ikatan Suci
                 </span>
                 <h3 className="font-serif text-2xl text-[#221F1D] font-medium mt-0.5">
-                  {akad.title}
+                  {akad.title || 'Akad Nikah'}
                 </h3>
               </div>
               <span className="text-xs font-mono text-[#8C827A] px-2.5 py-1 bg-[#F7F3ED] rounded-md">
-                {akad.time.split('-')[0] || '08:00 WIB'}
+                {(akad.timeFormatted || akad.time || '08:00 WIB').split('-')[0]}
               </span>
             </div>
 
@@ -82,15 +82,15 @@ export const EventDetailsSection: React.FC<EventDetailsSectionProps> = ({ invita
               <div className="flex items-start gap-2.5">
                 <Clock className="w-4 h-4 text-[#B89B72] shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-medium text-[#221F1D]">{akad.date}</p>
-                  <p className="text-[#7A726B]">{akad.time}</p>
+                  <p className="font-medium text-[#221F1D]">{akad.dateFormatted || akad.date}</p>
+                  <p className="text-[#7A726B]">{akad.timeFormatted || akad.time}</p>
                 </div>
               </div>
 
               <div className="flex items-start gap-2.5">
                 <MapPin className="w-4 h-4 text-[#B89B72] shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-medium text-[#221F1D]">{akad.venue}</p>
+                  <p className="font-medium text-[#221F1D]">{akad.venueName || akad.venue}</p>
                   <p className="text-[#7A726B] leading-relaxed">{akad.address}</p>
                 </div>
               </div>
@@ -130,11 +130,11 @@ export const EventDetailsSection: React.FC<EventDetailsSectionProps> = ({ invita
                   Perayaan Bahagia
                 </span>
                 <h3 className="font-serif text-2xl text-[#221F1D] font-medium mt-0.5">
-                  {resepsi.title}
+                  {resepsi.title || 'Resepsi Pernikahan'}
                 </h3>
               </div>
               <span className="text-xs font-mono text-[#8C827A] px-2.5 py-1 bg-[#F7F3ED] rounded-md">
-                {resepsi.time.split('-')[0] || '11:30 WIB'}
+                {(resepsi.timeFormatted || resepsi.time || '11:30 WIB').split('-')[0]}
               </span>
             </div>
 
@@ -142,15 +142,15 @@ export const EventDetailsSection: React.FC<EventDetailsSectionProps> = ({ invita
               <div className="flex items-start gap-2.5">
                 <Clock className="w-4 h-4 text-[#B89B72] shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-medium text-[#221F1D]">{resepsi.date}</p>
-                  <p className="text-[#7A726B]">{resepsi.time}</p>
+                  <p className="font-medium text-[#221F1D]">{resepsi.dateFormatted || resepsi.date}</p>
+                  <p className="text-[#7A726B]">{resepsi.timeFormatted || resepsi.time}</p>
                 </div>
               </div>
 
               <div className="flex items-start gap-2.5">
                 <MapPin className="w-4 h-4 text-[#B89B72] shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-medium text-[#221F1D]">{resepsi.venue}</p>
+                  <p className="font-medium text-[#221F1D]">{resepsi.venueName || resepsi.venue}</p>
                   <p className="text-[#7A726B] leading-relaxed">{resepsi.address}</p>
                 </div>
               </div>

@@ -151,23 +151,70 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
   };
 
   const updateAkad = (fields: Partial<ContentConfig['event']['akad']>) => {
+    // Keep venue <-> venueName, date <-> dateFormatted, time <-> timeFormatted in sync
+    const synced: Partial<ContentConfig['event']['akad']> = { ...fields };
+    if (fields.venueName !== undefined) {
+      synced.venue = fields.venueName;
+    } else if (fields.venue !== undefined) {
+      synced.venueName = fields.venue;
+    }
+    if (fields.dateFormatted !== undefined) {
+      synced.date = fields.dateFormatted;
+    } else if (fields.date !== undefined) {
+      synced.dateFormatted = fields.date;
+    }
+    if (fields.timeFormatted !== undefined) {
+      synced.time = fields.timeFormatted;
+    } else if (fields.time !== undefined) {
+      synced.timeFormatted = fields.time;
+    }
+
     onChange({
       ...content,
       event: {
         ...content.event,
-        akad: { ...content.event.akad, ...fields },
+        akad: { ...content.event.akad, ...synced },
       },
     });
   };
 
   const updateResepsi = (fields: Partial<ContentConfig['event']['resepsi']>) => {
-    onChange({
+    // Keep venue <-> venueName, date <-> dateFormatted, time <-> timeFormatted in sync
+    const synced: Partial<ContentConfig['event']['resepsi']> = { ...fields };
+    if (fields.venueName !== undefined) {
+      synced.venue = fields.venueName;
+    } else if (fields.venue !== undefined) {
+      synced.venueName = fields.venue;
+    }
+    if (fields.dateFormatted !== undefined) {
+      synced.date = fields.dateFormatted;
+    } else if (fields.date !== undefined) {
+      synced.dateFormatted = fields.date;
+    }
+    if (fields.timeFormatted !== undefined) {
+      synced.time = fields.timeFormatted;
+    } else if (fields.time !== undefined) {
+      synced.timeFormatted = fields.time;
+    }
+
+    const nextContent: ContentConfig = {
       ...content,
       event: {
         ...content.event,
-        resepsi: { ...content.event.resepsi, ...fields },
+        resepsi: { ...content.event.resepsi, ...synced },
       },
-    });
+    };
+
+    // Also auto-sync hero venue/location if user updates resepsi venue
+    if (synced.venue && (!content.hero.eventLocationText || content.hero.eventLocationText === content.hero.venue || content.hero.venue.includes('Glass House'))) {
+      nextContent.hero = {
+        ...nextContent.hero,
+        venue: synced.venue,
+        eventLocationText: synced.venue,
+      };
+    }
+
+    onChange(nextContent);
   };
 
   const updateClosing = (fields: Partial<ContentConfig['closing']>) => {
@@ -953,8 +1000,8 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                   <label className="block text-[11px] text-[#70675F] mb-1">Waktu Pelaksanaan</label>
                   <input
                     type="text"
-                    value={content.event.akad.timeFormatted}
-                    onChange={(e) => updateAkad({ timeFormatted: e.target.value })}
+                    value={content.event.akad.timeFormatted || content.event.akad.time || ''}
+                    onChange={(e) => updateAkad({ timeFormatted: e.target.value, time: e.target.value })}
                     placeholder="08:00 - 10:00 WIB"
                     className="w-full px-3 py-1.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg"
                   />
@@ -966,8 +1013,8 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                   <label className="block text-[11px] text-[#70675F] mb-1">Nama Tempat / Venue</label>
                   <input
                     type="text"
-                    value={content.event.akad.venueName}
-                    onChange={(e) => updateAkad({ venueName: e.target.value })}
+                    value={content.event.akad.venueName || content.event.akad.venue || ''}
+                    onChange={(e) => updateAkad({ venueName: e.target.value, venue: e.target.value })}
                     placeholder="Masjid Agung Al-Azhar"
                     className="w-full px-3 py-1.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg"
                   />
@@ -976,8 +1023,8 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                   <label className="block text-[11px] text-[#70675F] mb-1">Tanggal</label>
                   <input
                     type="text"
-                    value={content.event.akad.dateFormatted}
-                    onChange={(e) => updateAkad({ dateFormatted: e.target.value })}
+                    value={content.event.akad.dateFormatted || content.event.akad.date || ''}
+                    onChange={(e) => updateAkad({ dateFormatted: e.target.value, date: e.target.value })}
                     placeholder="Sabtu, 24 Oktober 2026"
                     className="w-full px-3 py-1.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg"
                   />
@@ -1027,8 +1074,8 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                   <label className="block text-[11px] text-[#70675F] mb-1">Waktu Pelaksanaan</label>
                   <input
                     type="text"
-                    value={content.event.resepsi.timeFormatted}
-                    onChange={(e) => updateResepsi({ timeFormatted: e.target.value })}
+                    value={content.event.resepsi.timeFormatted || content.event.resepsi.time || ''}
+                    onChange={(e) => updateResepsi({ timeFormatted: e.target.value, time: e.target.value })}
                     placeholder="11:00 - 14:00 WIB"
                     className="w-full px-3 py-1.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg"
                   />
@@ -1040,8 +1087,8 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                   <label className="block text-[11px] text-[#70675F] mb-1">Nama Tempat / Venue</label>
                   <input
                     type="text"
-                    value={content.event.resepsi.venueName}
-                    onChange={(e) => updateResepsi({ venueName: e.target.value })}
+                    value={content.event.resepsi.venueName || content.event.resepsi.venue || ''}
+                    onChange={(e) => updateResepsi({ venueName: e.target.value, venue: e.target.value })}
                     placeholder="The Tribrata Darmawangsa"
                     className="w-full px-3 py-1.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg"
                   />
@@ -1050,8 +1097,8 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                   <label className="block text-[11px] text-[#70675F] mb-1">Tanggal</label>
                   <input
                     type="text"
-                    value={content.event.resepsi.dateFormatted}
-                    onChange={(e) => updateResepsi({ dateFormatted: e.target.value })}
+                    value={content.event.resepsi.dateFormatted || content.event.resepsi.date || ''}
+                    onChange={(e) => updateResepsi({ dateFormatted: e.target.value, date: e.target.value })}
                     placeholder="Sabtu, 24 Oktober 2026"
                     className="w-full px-3 py-1.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg"
                   />

@@ -11,24 +11,24 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({ musicUrl, autoPlayTrig
   const [isPlaying, setIsPlaying] = useState(false);
   const [resolvedSrc, setResolvedSrc] = useState<string>('');
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const hasTriggeredPlay = useRef<boolean>(false);
 
-  // Resolve audio URL (handles idb://, https://, etc.)
+  // Resolve audio URL (handles idb://, https://, and remote device fallbacks)
   useEffect(() => {
     let isMounted = true;
-    if (!musicUrl) {
-      setResolvedSrc('');
-      return;
-    }
+    const targetUrl = musicUrl || 'https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3';
 
-    resolveAudioUrl(musicUrl)
+    resolveAudioUrl(targetUrl)
       .then((url) => {
         if (isMounted) {
-          setResolvedSrc(url);
+          setResolvedSrc(url || 'https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3');
         }
       })
       .catch((err) => {
         console.warn('[MusicPlayer] Failed to resolve audio URL:', err);
-        if (isMounted) setResolvedSrc(musicUrl);
+        if (isMounted) {
+          setResolvedSrc('https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3');
+        }
       });
 
     return () => {
@@ -36,20 +36,50 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({ musicUrl, autoPlayTrig
     };
   }, [musicUrl]);
 
-  // Autoplay trigger
+  // Robust play execution function
+  const attemptPlay = () => {
+    if (!audioRef.current || !resolvedSrc) return;
+    const playPromise = audioRef.current.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          setIsPlaying(true);
+          hasTriggeredPlay.current = true;
+        })
+        .catch((err) => {
+          console.info('[Audio] Autoplay pending user interaction:', err);
+          setIsPlaying(false);
+        });
+    }
+  };
+
+  // Autoplay trigger when user clicks "Buka Undangan"
   useEffect(() => {
-    if (autoPlayTrigger && audioRef.current && resolvedSrc) {
-      const playPromise = audioRef.current.play();
-      if (playPromise !== undefined) {
-        playPromise
-          .then(() => setIsPlaying(true))
-          .catch((err) => {
-            console.info('[Audio] Autoplay blocked by browser policy; waiting for user interaction:', err);
-            setIsPlaying(false);
-          });
-      }
+    if (autoPlayTrigger && resolvedSrc) {
+      attemptPlay();
     }
   }, [autoPlayTrigger, resolvedSrc]);
+
+  // Mobile User Interaction listener:
+  // If the mobile browser blocked autoplay when page loaded, the very first touch/click
+  // anywhere on the screen (or on "Buka Undangan") will instantly unlock and play the audio
+  useEffect(() => {
+    if (!resolvedSrc) return;
+
+    const handleFirstUserInteraction = () => {
+      if (autoPlayTrigger && !isPlaying && !hasTriggeredPlay.current) {
+        attemptPlay();
+      }
+    };
+
+    window.addEventListener('click', handleFirstUserInteraction, { once: true, passive: true });
+    window.addEventListener('touchstart', handleFirstUserInteraction, { once: true, passive: true });
+
+    return () => {
+      window.removeEventListener('click', handleFirstUserInteraction);
+      window.removeEventListener('touchstart', handleFirstUserInteraction);
+    };
+  }, [resolvedSrc, autoPlayTrigger, isPlaying]);
 
   const togglePlay = () => {
     if (!audioRef.current) return;
@@ -59,7 +89,10 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({ musicUrl, autoPlayTrig
     } else {
       audioRef.current
         .play()
-        .then(() => setIsPlaying(true))
+        .then(() => {
+          setIsPlaying(true);
+          hasTriggeredPlay.current = true;
+        })
         .catch((e) => console.warn('[Audio] Play error:', e));
     }
   };
@@ -92,3 +125,4 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({ musicUrl, autoPlayTrig
     </>
   );
 };
+
