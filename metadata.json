@@ -1,0 +1,6 @@
+{
+  "name": "Luxury Digital Wedding Invitation",
+  "description": "Website undangan pernikahan online Resti & Ramdan dengan sistem personalisasi nama tamu berbasis URL slug, RSVP, ucapan, dan admin dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

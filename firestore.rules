@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Public invitation document & CMS configuration
+    match /invitations/{invitationId} {
+      allow get, list: if isValidId(invitationId);
+      allow write: if isValidId(invitationId);
+
+      // Subcollection: Guests
+      match /guests/{guestId} {
+        allow read: if isValidId(guestId);
+        allow list: if true;
+        allow create, update, delete: if isValidId(guestId);
+      }
+
+      // Subcollection: Wishes Wall
+      match /wishes/{wishId} {
+        allow read, list: if true;
+        allow create: if isValidId(wishId) &&
+          request.resource.data.guestName is string &&
+          request.resource.data.guestName.size() >= 1 &&
+          request.resource.data.guestName.size() <= 100 &&
+          request.resource.data.message is string &&
+          request.resource.data.message.size() >= 1 &&
+          request.resource.data.message.size() <= 1500;
+        allow update, delete: if isValidId(wishId);
+      }
+
+      // Subcollection: Cloud Media (Cross-device synced photos)
+      match /media/{mediaId} {
+        allow read, list: if true;
+        allow create, update, delete: if isValidId(mediaId);
+      }
+    }
+
+    // Deny all other top-level collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+

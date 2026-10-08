@@ -1,0 +1,67 @@
+{
+  "entities": {
+    "invitation": {
+      "title": "Invitation",
+      "description": "Master wedding invitation record containing event details and theme assets.",
+      "type": "object",
+      "properties": {
+        "groomName": { "type": "string", "maxLength": 100 },
+        "brideName": { "type": "string", "maxLength": 100 },
+        "eventDate": { "type": "string", "maxLength": 50 },
+        "eventTime": { "type": "string", "maxLength": 50 },
+        "venue": { "type": "string", "maxLength": 200 },
+        "address": { "type": "string", "maxLength": 500 },
+        "mapsUrl": { "type": "string", "maxLength": 500 },
+        "coverImage": { "type": "string", "maxLength": 1000 },
+        "musicUrl": { "type": "string", "maxLength": 1000 },
+        "story": { "type": "string", "maxLength": 2000 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["groomName", "brideName", "eventDate", "venue", "address"]
+    },
+    "guest": {
+      "title": "Guest",
+      "description": "Guest record with unique entrance access code and personal invitation tracking.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 150, "minLength": 2 },
+        "uniqueCode": { "type": "string", "maxLength": 12, "minLength": 5, "pattern": "^[A-Z0-9]+$" },
+        "category": { "type": "string", "enum": ["keluarga", "sahabat", "rekan", "vip"] },
+        "phone": { "type": "string", "maxLength": 30 },
+        "isOpened": { "type": "boolean" },
+        "openedAt": { "type": "string" },
+        "rsvpStatus": { "type": "string", "enum": ["hadir", "tidak_hadir", "ragu", "menunggu"] },
+        "guestCount": { "type": "number" },
+        "rsvpNotes": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["name", "uniqueCode", "category", "isOpened"]
+    },
+    "guestWish": {
+      "title": "GuestWish",
+      "description": "Congratulations, prayer, or well-wishing message submitted by a guest.",
+      "type": "object",
+      "properties": {
+        "guestName": { "type": "string", "maxLength": 100, "minLength": 2 },
+        "message": { "type": "string", "maxLength": 1000, "minLength": 2 },
+        "attendance": { "type": "string", "enum": ["hadir", "tidak_hadir", "ragu"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["guestName", "message", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/invitations/{invitationId}": {
+      "schema": "invitation",
+      "description": "Public invitation metadata and wedding schedules."
+    },
+    "/invitations/{invitationId}/guests/{guestId}": {
+      "schema": "guest",
+      "description": "Personalized guest list with unique access codes and read tracking."
+    },
+    "/invitations/{invitationId}/wishes/{wishId}": {
+      "schema": "guestWish",
+      "description": "Guest prayers and well-wishes wall."
+    }
+  }
+}

@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-serif: 'Cormorant Garamond', Georgia, serif;
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+
+  html {
+    scroll-behavior: auto; /* Allow fine-grained JS easing without browser conflict */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    color: #262422;
+    background-color: #FAF8F5;
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, h4, .font-serif {
+    font-family: var(--font-serif);
+  }
+}
+
+/* Custom subtle scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #FAF8F5;
+}
+::-webkit-scrollbar-thumb {
+  background: #D8D1C7;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #B8AE9F;
+}
+
+/* Luxury editorial styling touches */
+.text-gold {
+  color: #B89B72;
+}
+
+.border-gold {
+  border-color: #D6C7B2;
+}
+
+.bg-gold {
+  background-color: #B89B72;
+}
+
+.bg-ivory {
+  background-color: #FAF8F5;
+}
+
+.bg-champagne {
+  background-color: #F4EFEA;
+}
+
+/* Touch responsiveness */
+button, a, input, select, textarea {
+  touch-action: manipulation;
+}
+
