@@ -347,16 +347,33 @@ export const GuestInvitationPage: React.FC<GuestInvitationPageProps> = ({
                     layout={section}
                   />
                 );
-              case 'countdown':
+              case 'countdown': {
+                const heroEventDate =
+                  invitation.content?.hero?.eventDateText ||
+                  invitation.content?.hero?.eventDate ||
+                  invitation.eventDate;
+                const heroEventTime =
+                  invitation.content?.hero?.eventTimeText ||
+                  invitation.content?.event?.akad?.timeFormatted ||
+                  invitation.content?.event?.akad?.time ||
+                  invitation.eventTime;
+                const countdownTargetISO =
+                  invitation.content?.hero?.eventDateISO ||
+                  invitation.content?.countdown?.targetDateISO ||
+                  invitation.eventDateISO;
+
                 return (
                   <CountdownSection
                     key="countdown"
-                    targetDateISO={invitation.content?.countdown.targetDateISO || invitation.eventDateISO}
-                    title={invitation.content?.countdown.title}
-                    subtitle={invitation.content?.countdown.subtitle}
+                    targetDateISO={countdownTargetISO}
+                    eventDateText={heroEventDate}
+                    eventTimeText={heroEventTime}
+                    title={invitation.content?.countdown?.title}
+                    subtitle={invitation.content?.countdown?.subtitle}
                     layout={section}
                   />
                 );
+              }
               case 'event':
                 return <EventDetailsSection key="event" invitation={invitation} layout={section} />;
               case 'story':

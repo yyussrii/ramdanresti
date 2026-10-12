@@ -16,6 +16,7 @@ import { db, isFirebaseConfigured } from '../config/firebase';
 import { Invitation, Guest, GuestCategory, GuestWish, RSVPStatus } from '../types';
 import { INITIAL_INVITATION, INITIAL_GUESTS, INITIAL_WISHES } from './seedData';
 import { generateSlug, generateUniqueSlug } from '../utils/slugGenerator';
+import { parseIndonesianDateToISO } from '../utils/dateParser';
 
 const LOCAL_STORAGE_INVITATION_KEY = 'wedding_invitation_data_v1';
 const LOCAL_STORAGE_GUESTS_KEY = 'wedding_guests_data_v1';
@@ -278,8 +279,25 @@ export const dbService = {
           updated.brideParents = updates.content.couple.bride.parents;
         }
       }
-      updated.eventDate = updates.content.hero.eventDate;
-      updated.eventDateISO = updates.content.hero.eventDateISO;
+      const heroDateStr = updates.content.hero.eventDateText || updates.content.hero.eventDate;
+      if (heroDateStr) {
+        updated.eventDate = heroDateStr;
+        const autoISO = parseIndonesianDateToISO(heroDateStr, updates.content.hero.eventTimeText);
+        if (autoISO) {
+          updated.eventDateISO = autoISO;
+          if (updated.content?.hero) {
+            updated.content.hero.eventDateISO = autoISO;
+          }
+          if (updated.content?.countdown) {
+            updated.content.countdown.targetDateISO = autoISO;
+          }
+        } else if (updates.content.hero.eventDateISO) {
+          updated.eventDateISO = updates.content.hero.eventDateISO;
+        }
+      } else {
+        updated.eventDate = updates.content.hero.eventDate;
+        updated.eventDateISO = updates.content.hero.eventDateISO;
+      }
       updated.venue = updates.content.hero.venue;
       updated.heroImage = updates.content.hero.heroImage;
       updated.akad = updates.content.event.akad;

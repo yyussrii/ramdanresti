@@ -15,9 +15,12 @@ import {
   BookOpen,
   Instagram,
   RefreshCw,
+  Timer,
 } from 'lucide-react';
 import { ContentConfig, LoveStoryMilestone, BankAccount } from '../../types';
 import { ImageUploaderField } from './ImageUploaderField';
+import { parseIndonesianDateToISO, parseEventDate } from '../../utils/dateParser';
+import { DEFAULT_CONTENT_CONFIG } from '../../constants/cmsDefaults';
 
 interface ContentEditorProps {
   content: ContentConfig;
@@ -41,11 +44,78 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
     });
   };
 
-  const updateHero = (fields: Partial<ContentConfig['hero']>) => {
+  const updateCountdown = (fields: Partial<ContentConfig['countdown']>) => {
     onChange({
       ...content,
-      hero: { ...content.hero, ...fields },
+      countdown: { ...(content.countdown || DEFAULT_CONTENT_CONFIG.countdown), ...fields },
     });
+  };
+
+  const updateHero = (fields: Partial<ContentConfig['hero']>) => {
+    const updatedHero = { ...content.hero, ...fields };
+
+    // Synchronize eventDate and eventDateText
+    if (fields.eventDateText !== undefined) {
+      updatedHero.eventDate = fields.eventDateText;
+    } else if (fields.eventDate !== undefined) {
+      updatedHero.eventDateText = fields.eventDate;
+    }
+
+    // Try to auto-parse ISO date from the event date text and time to keep Countdown perfectly synchronized
+    const rawDateText = updatedHero.eventDateText || updatedHero.eventDate;
+    const parsedISO = parseIndonesianDateToISO(rawDateText, updatedHero.eventTimeText);
+    if (parsedISO) {
+      updatedHero.eventDateISO = parsedISO;
+    }
+
+    const nextContent: ContentConfig = {
+      ...content,
+      hero: updatedHero,
+    };
+
+    // Keep countdown targetDateISO synchronized with hero event date
+    if (parsedISO) {
+      nextContent.countdown = {
+        ...(content.countdown || DEFAULT_CONTENT_CONFIG.countdown),
+        targetDateISO: parsedISO,
+      };
+    }
+
+    // Synchronize brideName with couple profile & closing
+    if (fields.brideName !== undefined) {
+      nextContent.couple = {
+        ...nextContent.couple,
+        bride: {
+          ...nextContent.couple.bride,
+          name: fields.brideName,
+        },
+      };
+      if (nextContent.closing) {
+        nextContent.closing = {
+          ...nextContent.closing,
+          couplesText: `${fields.brideName} & ${content.hero.groomName || 'Ramdan'}`,
+        };
+      }
+    }
+
+    // Synchronize groomName with couple profile & closing
+    if (fields.groomName !== undefined) {
+      nextContent.couple = {
+        ...nextContent.couple,
+        groom: {
+          ...nextContent.couple.groom,
+          name: fields.groomName,
+        },
+      };
+      if (nextContent.closing) {
+        nextContent.closing = {
+          ...nextContent.closing,
+          couplesText: `${content.hero.brideName || 'Resti'} & ${fields.groomName}`,
+        };
+      }
+    }
+
+    onChange(nextContent);
   };
 
   const updateCouple = (fields: Partial<ContentConfig['couple']>) => {
@@ -141,13 +211,6 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
     }
 
     onChange(nextContent);
-  };
-
-  const updateCountdown = (fields: Partial<ContentConfig['countdown']>) => {
-    onChange({
-      ...content,
-      countdown: { ...content.countdown, ...fields },
-    });
   };
 
   const updateAkad = (fields: Partial<ContentConfig['event']['akad']>) => {
@@ -329,6 +392,68 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
 
         {openSection === 'opening' && (
           <div className="p-5 border-t border-[#EFE8DC] bg-[#FAF8F5]/30 space-y-4 text-xs">
+            {/* Synchronized Couple Names & Event Date on Cover */}
+            <div className="p-3.5 rounded-xl bg-white border border-[#E8DFD3] space-y-3">
+              <div className="flex items-center justify-between pb-1.5 border-b border-[#F5EFE6]">
+                <span className="font-semibold text-[11px] text-[#242220] flex items-center gap-1.5">
+                  <Heart className="w-3.5 h-3.5 text-[#C5A059]" />
+                  <span>Nama Mempelai &amp; Tanggal Acara di Cover</span>
+                </span>
+                <span className="text-[10px] text-[#A69C92] bg-[#FAF8F5] px-2 py-0.5 rounded-md border border-[#E8DFD3]">
+                  Terhubung ke Hero &amp; Halaman Undangan
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
+                    Nama Mempelai Wanita
+                  </label>
+                  <input
+                    type="text"
+                    value={content.hero.brideName}
+                    onChange={(e) => updateHero({ brideName: e.target.value })}
+                    placeholder="Resti"
+                    className="w-full px-3 py-2 bg-[#FAF8F5] border border-[#E8DFD3] rounded-xl focus:outline-none focus:border-[#C5A059]"
+                  />
+                  <p className="text-[10px] text-[#8C827A] mt-0.5">Otomatis sinkron dengan seksi Hero &amp; Profil Mempelai</p>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
+                    Nama Mempelai Pria
+                  </label>
+                  <input
+                    type="text"
+                    value={content.hero.groomName}
+                    onChange={(e) => updateHero({ groomName: e.target.value })}
+                    placeholder="Ramdan"
+                    className="w-full px-3 py-2 bg-[#FAF8F5] border border-[#E8DFD3] rounded-xl focus:outline-none focus:border-[#C5A059]"
+                  />
+                  <p className="text-[10px] text-[#8C827A] mt-0.5">Otomatis sinkron dengan seksi Hero &amp; Profil Mempelai</p>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
+                  Tanggal Acara (Tampil di Cover &amp; Hero)
+                </label>
+                <div className="relative">
+                  <Calendar className="w-3.5 h-3.5 text-[#8C827A] absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={content.hero.eventDateText || content.hero.eventDate || ''}
+                    onChange={(e) => updateHero({ eventDateText: e.target.value, eventDate: e.target.value })}
+                    placeholder="Sabtu, 24 Oktober 2026"
+                    className="w-full pl-8.5 pr-3 py-2 bg-[#FAF8F5] border border-[#E8DFD3] rounded-xl focus:outline-none focus:border-[#C5A059]"
+                  />
+                </div>
+                <p className="text-[10px] text-[#8C827A] mt-0.5">
+                  Teks tanggal yang muncul di bawah nama mempelai pada cover pembuka dan badge tanggal Hero.
+                </p>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block font-medium text-[#3D3833] mb-1">Label Atas</label>
@@ -954,7 +1079,97 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
         )}
       </div>
 
-      {/* 4. Rangkaian Acara (Akad & Resepsi) */}
+      {/* 4. Hitung Mundur Acara (Countdown) */}
+      <div className="bg-white rounded-2xl border border-[#EFE8DC] overflow-hidden shadow-xs">
+        <button
+          onClick={() => toggleSection('countdown')}
+          className="w-full p-4 sm:p-5 flex items-center justify-between text-left hover:bg-[#FAF8F5]/60 transition-colors cursor-pointer"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-[#FAF8F5] flex items-center justify-center text-[#C5A059]">
+              <Timer className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-[#1F1D1B]">Hitung Mundur (Countdown Acara)</h4>
+              <p className="text-[11px] text-[#8C827A] font-light">
+                Judul, pengantar, dan sinkronisasi tanggal otomatis dengan seksi Hero
+              </p>
+            </div>
+          </div>
+          {openSection === 'countdown' ? (
+            <ChevronUp className="w-4 h-4 text-[#8C827A]" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-[#8C827A]" />
+          )}
+        </button>
+
+        {openSection === 'countdown' && (
+          <div className="p-5 border-t border-[#EFE8DC] bg-[#FAF8F5]/30 space-y-4 text-xs">
+            {/* Live Hero Sync Status Banner */}
+            <div className="p-3.5 bg-white rounded-xl border border-[#E8DFD3] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+              <div className="flex items-start gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-[#FAF5EE] border border-[#E8DFD3] flex items-center justify-center text-[#C5A059] shrink-0 mt-0.5">
+                  <Calendar className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <span className="text-[11px] font-semibold text-[#1F1D1B] block">
+                    Tanggal Acara yang Disinkronkan:
+                  </span>
+                  <p className="text-xs font-serif text-[#8C6D23] font-medium mt-0.5">
+                    {content.hero.eventDateText || content.hero.eventDate || 'Belum diatur'}
+                    {content.hero.eventTimeText ? ` (${content.hero.eventTimeText})` : ''}
+                  </p>
+                  <p className="text-[10px] text-[#8C827A] mt-0.5">
+                    Countdown otomatis menghitung mundur ke tanggal yang tertulis di seksi Hero &amp; Nama Mempelai.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const rawDate = content.hero.eventDateText || content.hero.eventDate;
+                  const autoISO = parseIndonesianDateToISO(rawDate, content.hero.eventTimeText);
+                  if (autoISO) {
+                    updateCountdown({ targetDateISO: autoISO });
+                    updateHero({ eventDateISO: autoISO });
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FAF5EE] hover:bg-[#F2ECE1] border border-[#E8DFD3] text-[#8C6D23] text-xs font-medium cursor-pointer transition-colors self-start sm:self-auto shrink-0"
+              >
+                <RefreshCw className="w-3 h-3 text-[#C5A059]" />
+                <span>Sinkronkan Ulang dari Hero</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block font-medium text-[#3D3833] mb-1">Judul Section</label>
+                <input
+                  type="text"
+                  value={content.countdown?.title || 'Menuju Hari Bahagia'}
+                  onChange={(e) => updateCountdown({ title: e.target.value })}
+                  placeholder="Menuju Hari Bahagia"
+                  className="w-full px-3 py-2 bg-white border border-[#E8DFD3] rounded-xl focus:outline-none focus:border-[#C5A059]"
+                />
+              </div>
+
+              <div>
+                <label className="block font-medium text-[#3D3833] mb-1">Subtitle / Pengantar</label>
+                <input
+                  type="text"
+                  value={content.countdown?.subtitle || ''}
+                  onChange={(e) => updateCountdown({ subtitle: e.target.value })}
+                  placeholder="Setiap detik yang terlewati membawa kami semakin dekat..."
+                  className="w-full px-3 py-2 bg-white border border-[#E8DFD3] rounded-xl focus:outline-none focus:border-[#C5A059]"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 5. Rangkaian Acara (Akad & Resepsi) */}
       <div className="bg-white rounded-2xl border border-[#EFE8DC] overflow-hidden shadow-xs">
         <button
           onClick={() => toggleSection('event')}
