@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Volume2, VolumeX } from 'lucide-react';
-import { resolveAudioUrl } from '../../services/audioStorageService';
 
 interface MusicPlayerProps {
   musicUrl: string;
@@ -14,27 +13,9 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({ musicUrl, autoPlayTrig
   const hasTriggeredPlay = useRef<boolean>(false);
 
   // Resolve audio URL (handles idb://, https://, and remote device fallbacks)
-  useEffect(() => {
-    let isMounted = true;
-    const targetUrl = musicUrl || 'https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3';
-
-    resolveAudioUrl(targetUrl)
-      .then((url) => {
-        if (isMounted) {
-          setResolvedSrc(url || 'https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3');
-        }
-      })
-      .catch((err) => {
-        console.warn('[MusicPlayer] Failed to resolve audio URL:', err);
-        if (isMounted) {
-          setResolvedSrc('https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3');
-        }
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [musicUrl]);
+ useEffect(() => {
+  setResolvedSrc('/music/music.mp3');
+}, []);
 
   // Robust play execution function
   const attemptPlay = () => {
