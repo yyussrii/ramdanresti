@@ -183,21 +183,42 @@ export const GuestManager: React.FC<GuestManagerProps> = ({
     setTimeout(() => setCopiedSlug(null), 2500);
   };
 
-  // Copy All Links
-  const handleCopyAllLinks = () => {
+
+  // Copy All Links with Invitation Message
+  const handleCopyAllLinks = async () => {
     if (guests.length === 0) {
       showToast('Belum ada data tamu untuk disalin.');
       return;
     }
 
     const formattedList = guests
-      .map((g) => `${g.name}\n${window.location.origin}/inv/${g.slug}`)
-      .join('\n\n');
+      .map(
+        (g) => `Assalamualaikum Warahmatullahi Wabarakatuh
 
-    navigator.clipboard.writeText(formattedList);
-    setCopiedAll(true);
-    showToast(`Berhasil menyalin seluruh ${guests.length} tautan undangan tamu!`);
-    setTimeout(() => setCopiedAll(false), 2500);
+Tanpa mengurangi rasa hormat, perkenankan kami mengundang Bapak/Ibu/Saudara/i ${g.name} untuk menghadiri acara pernikahan kami.
+
+Berikut link undangan kami, untuk info lengkap dari acara bisa kunjungi :
+
+${window.location.origin}/inv/${g.slug}
+
+Merupakan suatu kebahagiaan bagi kami apabila Bapak/Ibu/Saudara/i berkenan untuk hadir dan memberikan doa restu.
+
+Mohon maaf perihal undangan hanya di bagikan melalui pesan ini.
+
+Terima kasih banyak atas perhatiannya.
+
+Salam Hormat`
+      )
+      .join('\n\n----------------------------------------\n\n');
+
+    try {
+      await navigator.clipboard.writeText(formattedList);
+      setCopiedAll(true);
+      showToast(`Berhasil menyalin ${guests.length} pesan undangan!`);
+      setTimeout(() => setCopiedAll(false), 2500);
+    } catch (err) {
+      showToast('Gagal menyalin pesan undangan.');
+    }
   };
 
   // Share WhatsApp
