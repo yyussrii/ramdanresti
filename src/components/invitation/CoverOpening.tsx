@@ -19,10 +19,7 @@ export const CoverOpening: React.FC<CoverOpeningProps> = ({
   const opening = invitation.content?.opening;
   const groomName = invitation.content?.hero.groomName || invitation.groomName;
   const brideName = invitation.content?.hero.brideName || invitation.brideName;
-  const eventDate =
-    invitation.content?.hero.eventDateText ||
-    invitation.content?.hero.eventDate ||
-    invitation.eventDate;
+  const eventDate = invitation.content?.hero.eventDate || invitation.eventDate;
 
   const label = opening?.label || 'The Wedding Celebration';
   const greeting = opening?.greeting || 'Kepada Yth. Bapak/Ibu/Saudara/i:';

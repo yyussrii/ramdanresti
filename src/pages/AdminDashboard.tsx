@@ -352,11 +352,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           {currentTab === 'konten' && (
             <ContentEditor
               content={currentContent}
-              isSaving={isSaving}
-              onSave={async (updatedContent) => {
-                await handleUpdateDraftConfig({ content: updatedContent });
-                showToast('Perubahan konten berhasil disimpan!');
-              }}
+              onChange={(updatedContent) => handleUpdateDraftConfig({ content: updatedContent })}
             />
           )}
 
