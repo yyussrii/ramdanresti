@@ -17,6 +17,7 @@ import {
   MusicConfig,
 } from '../types';
 import { dbService } from '../services/dbService';
+import { preloadMediaCache } from '../services/mediaStorageService';
 import { AdminSidebar, AdminTab } from '../components/admin/AdminSidebar';
 import { AdminHeader } from '../components/admin/AdminHeader';
 import { DashboardOverview } from '../components/admin/DashboardOverview';
@@ -91,6 +92,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setInvitation(invData);
       setGuests(guestData);
       setHasUnpublishedChanges(Boolean(invData.hasUnpublishedChanges));
+      preloadMediaCache().catch(() => { });
     } catch (err) {
       console.error('Error loading admin data:', err);
       showToast('Gagal memuat data dari database.');
@@ -352,7 +354,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           {currentTab === 'konten' && (
             <ContentEditor
               content={currentContent}
-              onChange={(updatedContent) => handleUpdateDraftConfig({ content: updatedContent })}
+              isSaving={isSaving}
+              onSave={async (updatedContent) => {
+                await handleUpdateDraftConfig({ content: updatedContent });
+                showToast('Perubahan konten berhasil disimpan!');
+              }}
             />
           )}
 

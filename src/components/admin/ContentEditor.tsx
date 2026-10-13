@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ChevronDown,
   ChevronUp,
@@ -15,44 +15,172 @@ import {
   BookOpen,
   Instagram,
   RefreshCw,
+  Timer,
+  Save,
+  CheckCircle2,
+  AlertCircle,
+  RotateCcw,
 } from 'lucide-react';
 import { ContentConfig, LoveStoryMilestone, BankAccount } from '../../types';
 import { ImageUploaderField } from './ImageUploaderField';
+import { parseIndonesianDateToISO, parseEventDate } from '../../utils/dateParser';
+import { DEFAULT_CONTENT_CONFIG } from '../../constants/cmsDefaults';
 
 interface ContentEditorProps {
   content: ContentConfig;
-  onChange: (updatedContent: ContentConfig) => void;
+  onChange?: (updatedContent: ContentConfig) => void;
+  onSave?: (updatedContent: ContentConfig) => Promise<void> | void;
+  isSaving?: boolean;
 }
 
-export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange }) => {
+export const ContentEditor: React.FC<ContentEditorProps> = ({
+  content: initialContent,
+  onChange,
+  onSave,
+  isSaving = false,
+}) => {
+  // Local state for blazing-fast, lag-free editing (no database calls on keystrokes)
+  const [content, setContent] = useState<ContentConfig>(initialContent);
+  const [isDirty, setIsDirty] = useState<boolean>(false);
+  const [localSaving, setLocalSaving] = useState<boolean>(false);
+  const [saveSuccessNotice, setSaveSuccessNotice] = useState<boolean>(false);
+
   // Accordion open state
   const [openSection, setOpenSection] = useState<string>('hero');
   const [activeCoupleTab, setActiveCoupleTab] = useState<'bride' | 'groom'>('bride');
+
+  // Sync if initialContent changes from outside (e.g. reload or parent saved)
+  useEffect(() => {
+    setContent(initialContent);
+    setIsDirty(false);
+  }, [initialContent]);
 
   const toggleSection = (id: string) => {
     setOpenSection(openSection === id ? '' : id);
   };
 
-  // Helper update functions
+  // Central local state updater - NEVER fires database writes on keystroke!
+  const updateContent = (updater: (prev: ContentConfig) => ContentConfig) => {
+    setContent((prev) => updater(prev));
+    setIsDirty(true);
+    setSaveSuccessNotice(false);
+  };
+
+  // Explicit Save & Discard Actions
+  const handleSave = async () => {
+    setLocalSaving(true);
+    setSaveSuccessNotice(false);
+    try {
+      if (onSave) {
+        await onSave(content);
+      } else if (onChange) {
+        onChange(content);
+      }
+      setIsDirty(false);
+      setSaveSuccessNotice(true);
+      setTimeout(() => setSaveSuccessNotice(false), 3500);
+    } catch (err) {
+      console.error('Error saving content:', err);
+    } finally {
+      setLocalSaving(false);
+    }
+  };
+
+  const handleDiscard = () => {
+    setContent(initialContent);
+    setIsDirty(false);
+    setSaveSuccessNotice(false);
+  };
+
+  // Helper update functions (local state only)
   const updateOpening = (fields: Partial<ContentConfig['opening']>) => {
-    onChange({
-      ...content,
-      opening: { ...content.opening, ...fields },
-    });
+    updateContent((prev) => ({
+      ...prev,
+      opening: { ...prev.opening, ...fields },
+    }));
+  };
+
+  const updateCountdown = (fields: Partial<ContentConfig['countdown']>) => {
+    updateContent((prev) => ({
+      ...prev,
+      countdown: { ...(prev.countdown || DEFAULT_CONTENT_CONFIG.countdown), ...fields },
+    }));
   };
 
   const updateHero = (fields: Partial<ContentConfig['hero']>) => {
-    onChange({
-      ...content,
-      hero: { ...content.hero, ...fields },
+    updateContent((prev) => {
+      const updatedHero = { ...prev.hero, ...fields };
+
+      // Synchronize eventDate and eventDateText
+      if (fields.eventDateText !== undefined) {
+        updatedHero.eventDate = fields.eventDateText;
+      } else if (fields.eventDate !== undefined) {
+        updatedHero.eventDateText = fields.eventDate;
+      }
+
+      // Try to auto-parse ISO date from the event date text and time to keep Countdown perfectly synchronized
+      const rawDateText = updatedHero.eventDateText || updatedHero.eventDate;
+      const parsedISO = parseIndonesianDateToISO(rawDateText, updatedHero.eventTimeText);
+      if (parsedISO) {
+        updatedHero.eventDateISO = parsedISO;
+      }
+
+      const nextContent: ContentConfig = {
+        ...prev,
+        hero: updatedHero,
+      };
+
+      // Keep countdown targetDateISO synchronized with hero event date
+      if (parsedISO) {
+        nextContent.countdown = {
+          ...(prev.countdown || DEFAULT_CONTENT_CONFIG.countdown),
+          targetDateISO: parsedISO,
+        };
+      }
+
+      // Synchronize brideName with couple profile & closing
+      if (fields.brideName !== undefined) {
+        nextContent.couple = {
+          ...nextContent.couple,
+          bride: {
+            ...nextContent.couple.bride,
+            name: fields.brideName,
+          },
+        };
+        if (nextContent.closing) {
+          nextContent.closing = {
+            ...nextContent.closing,
+            couplesText: `${fields.brideName} & ${prev.hero.groomName || 'Ramdan'}`,
+          };
+        }
+      }
+
+      // Synchronize groomName with couple profile & closing
+      if (fields.groomName !== undefined) {
+        nextContent.couple = {
+          ...nextContent.couple,
+          groom: {
+            ...nextContent.couple.groom,
+            name: fields.groomName,
+          },
+        };
+        if (nextContent.closing) {
+          nextContent.closing = {
+            ...nextContent.closing,
+            couplesText: `${prev.hero.brideName || 'Resti'} & ${fields.groomName}`,
+          };
+        }
+      }
+
+      return nextContent;
     });
   };
 
   const updateCouple = (fields: Partial<ContentConfig['couple']>) => {
-    onChange({
-      ...content,
-      couple: { ...content.couple, ...fields },
-    });
+    updateContent((prev) => ({
+      ...prev,
+      couple: { ...prev.couple, ...fields },
+    }));
   };
 
   const formatParentsString = (childOrder?: string, father?: string, mother?: string) => {
@@ -74,179 +202,355 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
   };
 
   const updateGroom = (fields: Partial<ContentConfig['couple']['groom']>) => {
-    const updatedGroom = { ...content.couple.groom, ...fields };
+    updateContent((prev) => {
+      const updatedGroom = { ...prev.couple.groom, ...fields };
 
-    // Align fullName and fullNameWithTitles
-    if (fields.fullNameWithTitles !== undefined && !fields.fullName) {
-      updatedGroom.fullName = fields.fullNameWithTitles;
-    } else if (fields.fullName !== undefined && !fields.fullNameWithTitles) {
-      updatedGroom.fullNameWithTitles = fields.fullName;
-    }
-
-    const nextContent: ContentConfig = {
-      ...content,
-      couple: {
-        ...content.couple,
-        groom: updatedGroom,
-      },
-    };
-
-    // Keep hero and closing in sync if groom's name is updated
-    if (fields.name && fields.name.trim()) {
-      nextContent.hero = {
-        ...nextContent.hero,
-        groomName: fields.name.trim(),
-      };
-      if (nextContent.closing) {
-        nextContent.closing = {
-          ...nextContent.closing,
-          couplesText: `${content.couple.bride.name || 'Resti'} & ${fields.name.trim()}`,
-        };
+      // Align fullName and fullNameWithTitles
+      if (fields.fullNameWithTitles !== undefined && !fields.fullName) {
+        updatedGroom.fullName = fields.fullNameWithTitles;
+      } else if (fields.fullName !== undefined && !fields.fullNameWithTitles) {
+        updatedGroom.fullNameWithTitles = fields.fullName;
       }
-    }
 
-    onChange(nextContent);
+      const nextContent: ContentConfig = {
+        ...prev,
+        couple: {
+          ...prev.couple,
+          groom: updatedGroom,
+        },
+      };
+
+      // Keep hero and closing in sync if groom's name is updated
+      if (fields.name && fields.name.trim()) {
+        nextContent.hero = {
+          ...nextContent.hero,
+          groomName: fields.name.trim(),
+        };
+        if (nextContent.closing) {
+          nextContent.closing = {
+            ...nextContent.closing,
+            couplesText: `${prev.couple.bride.name || 'Resti'} & ${fields.name.trim()}`,
+          };
+        }
+      }
+
+      return nextContent;
+    });
   };
 
   const updateBride = (fields: Partial<ContentConfig['couple']['bride']>) => {
-    const updatedBride = { ...content.couple.bride, ...fields };
+    updateContent((prev) => {
+      const updatedBride = { ...prev.couple.bride, ...fields };
 
-    // Align fullName and fullNameWithTitles
-    if (fields.fullNameWithTitles !== undefined && !fields.fullName) {
-      updatedBride.fullName = fields.fullNameWithTitles;
-    } else if (fields.fullName !== undefined && !fields.fullNameWithTitles) {
-      updatedBride.fullNameWithTitles = fields.fullName;
-    }
-
-    const nextContent: ContentConfig = {
-      ...content,
-      couple: {
-        ...content.couple,
-        bride: updatedBride,
-      },
-    };
-
-    // Keep hero and closing in sync if bride's name is updated
-    if (fields.name && fields.name.trim()) {
-      nextContent.hero = {
-        ...nextContent.hero,
-        brideName: fields.name.trim(),
-      };
-      if (nextContent.closing) {
-        nextContent.closing = {
-          ...nextContent.closing,
-          couplesText: `${fields.name.trim()} & ${content.couple.groom.name || 'Ramdan'}`,
-        };
+      // Align fullName and fullNameWithTitles
+      if (fields.fullNameWithTitles !== undefined && !fields.fullName) {
+        updatedBride.fullName = fields.fullNameWithTitles;
+      } else if (fields.fullName !== undefined && !fields.fullNameWithTitles) {
+        updatedBride.fullNameWithTitles = fields.fullName;
       }
-    }
 
-    onChange(nextContent);
-  };
+      const nextContent: ContentConfig = {
+        ...prev,
+        couple: {
+          ...prev.couple,
+          bride: updatedBride,
+        },
+      };
 
-  const updateCountdown = (fields: Partial<ContentConfig['countdown']>) => {
-    onChange({
-      ...content,
-      countdown: { ...content.countdown, ...fields },
+      // Keep hero and closing in sync if bride's name is updated
+      if (fields.name && fields.name.trim()) {
+        nextContent.hero = {
+          ...nextContent.hero,
+          brideName: fields.name.trim(),
+        };
+        if (nextContent.closing) {
+          nextContent.closing = {
+            ...nextContent.closing,
+            couplesText: `${fields.name.trim()} & ${prev.couple.groom.name || 'Ramdan'}`,
+          };
+        }
+      }
+
+      return nextContent;
     });
   };
 
   const updateAkad = (fields: Partial<ContentConfig['event']['akad']>) => {
-    onChange({
-      ...content,
-      event: {
-        ...content.event,
-        akad: { ...content.event.akad, ...fields },
-      },
+    updateContent((prev) => {
+      const synced: Partial<ContentConfig['event']['akad']> = { ...fields };
+      if (fields.venueName !== undefined) {
+        synced.venue = fields.venueName;
+      } else if (fields.venue !== undefined) {
+        synced.venueName = fields.venue;
+      }
+      if (fields.dateFormatted !== undefined) {
+        synced.date = fields.dateFormatted;
+      } else if (fields.date !== undefined) {
+        synced.dateFormatted = fields.date;
+      }
+      if (fields.timeFormatted !== undefined) {
+        synced.time = fields.timeFormatted;
+      } else if (fields.time !== undefined) {
+        synced.timeFormatted = fields.time;
+      }
+
+      return {
+        ...prev,
+        event: {
+          ...prev.event,
+          akad: { ...prev.event.akad, ...synced },
+        },
+      };
     });
   };
 
   const updateResepsi = (fields: Partial<ContentConfig['event']['resepsi']>) => {
-    onChange({
-      ...content,
-      event: {
-        ...content.event,
-        resepsi: { ...content.event.resepsi, ...fields },
-      },
+    updateContent((prev) => {
+      const synced: Partial<ContentConfig['event']['resepsi']> = { ...fields };
+      if (fields.venueName !== undefined) {
+        synced.venue = fields.venueName;
+      } else if (fields.venue !== undefined) {
+        synced.venueName = fields.venue;
+      }
+      if (fields.dateFormatted !== undefined) {
+        synced.date = fields.dateFormatted;
+      } else if (fields.date !== undefined) {
+        synced.dateFormatted = fields.date;
+      }
+      if (fields.timeFormatted !== undefined) {
+        synced.time = fields.timeFormatted;
+      } else if (fields.time !== undefined) {
+        synced.timeFormatted = fields.time;
+      }
+
+      const nextContent: ContentConfig = {
+        ...prev,
+        event: {
+          ...prev.event,
+          resepsi: { ...prev.event.resepsi, ...synced },
+        },
+      };
+
+      // Also auto-sync hero venue/location if user updates resepsi venue
+      if (
+        synced.venue &&
+        (!prev.hero.eventLocationText ||
+          prev.hero.eventLocationText === prev.hero.venue ||
+          prev.hero.venue.includes('Glass House'))
+      ) {
+        nextContent.hero = {
+          ...nextContent.hero,
+          venue: synced.venue,
+          eventLocationText: synced.venue,
+        };
+      }
+
+      return nextContent;
     });
+  };
+
+  const updateStory = (fields: Partial<ContentConfig['story']>) => {
+    updateContent((prev) => ({
+      ...prev,
+      story: { ...prev.story, ...fields },
+    }));
+  };
+
+  const updateGallery = (fields: Partial<ContentConfig['gallery']>) => {
+    updateContent((prev) => ({
+      ...prev,
+      gallery: { ...prev.gallery, ...fields },
+    }));
+  };
+
+  const updateGift = (fields: Partial<ContentConfig['gift']>) => {
+    updateContent((prev) => ({
+      ...prev,
+      gift: { ...prev.gift, ...fields },
+    }));
   };
 
   const updateClosing = (fields: Partial<ContentConfig['closing']>) => {
-    onChange({
-      ...content,
-      closing: { ...content.closing, ...fields },
-    });
+    updateContent((prev) => ({
+      ...prev,
+      closing: { ...prev.closing, ...fields },
+    }));
   };
 
-  // Milestones Handlers
+  // Milestones Handlers (local state)
   const handleAddMilestone = () => {
     const newMilestone: LoveStoryMilestone = {
       year: new Date().getFullYear().toString(),
       title: 'Babak Baru',
       description: 'Tuliskan momen indah perjalanan cinta Anda di sini.',
     };
-    onChange({
-      ...content,
+    updateContent((prev) => ({
+      ...prev,
       story: {
-        ...content.story,
-        milestones: [...content.story.milestones, newMilestone],
+        ...prev.story,
+        milestones: [...prev.story.milestones, newMilestone],
       },
-    });
+    }));
   };
 
   const handleUpdateMilestone = (index: number, fields: Partial<LoveStoryMilestone>) => {
-    const updated = [...content.story.milestones];
-    updated[index] = { ...updated[index], ...fields };
-    onChange({
-      ...content,
-      story: { ...content.story, milestones: updated },
+    updateContent((prev) => {
+      const updated = [...prev.story.milestones];
+      updated[index] = { ...updated[index], ...fields };
+      return {
+        ...prev,
+        story: { ...prev.story, milestones: updated },
+      };
     });
   };
 
   const handleDeleteMilestone = (index: number) => {
-    const updated = content.story.milestones.filter((_, i) => i !== index);
-    onChange({
-      ...content,
-      story: { ...content.story, milestones: updated },
+    updateContent((prev) => {
+      const updated = prev.story.milestones.filter((_, i) => i !== index);
+      return {
+        ...prev,
+        story: { ...prev.story, milestones: updated },
+      };
     });
   };
 
-  // Bank Accounts Handlers
+  // Bank Accounts Handlers (local state)
   const handleAddBankAccount = () => {
-    const holder = `${content.hero.groomName} / ${content.hero.brideName}`;
-    const newAccount: BankAccount = {
-      bank: 'BCA',
-      accountNumber: '1234567890',
-      accountName: holder,
-      accountHolder: holder,
-    };
-    onChange({
-      ...content,
-      gift: {
-        ...content.gift,
-        bankAccounts: [...content.gift.bankAccounts, newAccount],
-      },
+    updateContent((prev) => {
+      const holder = `${prev.hero.groomName} / ${prev.hero.brideName}`;
+      const newAccount: BankAccount = {
+        bank: 'BCA',
+        accountNumber: '1234567890',
+        accountName: holder,
+        accountHolder: holder,
+      };
+      return {
+        ...prev,
+        gift: {
+          ...prev.gift,
+          bankAccounts: [...prev.gift.bankAccounts, newAccount],
+        },
+      };
     });
   };
 
   const handleUpdateBankAccount = (index: number, fields: Partial<BankAccount>) => {
-    const updated = [...content.gift.bankAccounts];
-    updated[index] = { ...updated[index], ...fields };
-    onChange({
-      ...content,
-      gift: { ...content.gift, bankAccounts: updated },
+    updateContent((prev) => {
+      const updated = [...prev.gift.bankAccounts];
+      updated[index] = { ...updated[index], ...fields };
+      return {
+        ...prev,
+        gift: { ...prev.gift, bankAccounts: updated },
+      };
     });
   };
 
   const handleDeleteBankAccount = (index: number) => {
-    const updated = content.gift.bankAccounts.filter((_, i) => i !== index);
-    onChange({
-      ...content,
-      gift: { ...content.gift, bankAccounts: updated },
+    updateContent((prev) => {
+      const updated = prev.gift.bankAccounts.filter((_, i) => i !== index);
+      return {
+        ...prev,
+        gift: { ...prev.gift, bankAccounts: updated },
+      };
     });
   };
 
+  // Gallery Helpers (local state)
+  const handleUpdateGalleryCaption = (index: number, caption: string) => {
+    updateContent((prev) => {
+      const updated = [...prev.gallery.images];
+      updated[index] = { ...updated[index], caption };
+      return {
+        ...prev,
+        gallery: { ...prev.gallery, images: updated },
+      };
+    });
+  };
+
+  const handleDeleteGalleryImage = (index: number) => {
+    updateContent((prev) => {
+      const updated = prev.gallery.images.filter((_, i) => i !== index);
+      return {
+        ...prev,
+        gallery: { ...prev.gallery, images: updated },
+      };
+    });
+  };
+
+  const isSavingActive = isSaving || localSaving;
+
   return (
-    <div className="space-y-4 max-w-4xl mx-auto pb-12">
+    <div className="space-y-4 max-w-4xl mx-auto pb-24 relative">
+      {/* Top Save Action & Sync Status Bar */}
+      <div
+        className={`p-4 rounded-2xl border transition-all duration-300 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 sticky top-2 z-20 backdrop-blur-md ${isDirty
+            ? 'bg-[#FFFDF7]/95 border-[#E2B755] shadow-md ring-1 ring-[#E2B755]/30'
+            : 'bg-white/95 border-[#EFE8DC]'
+          }`}
+      >
+        <div className="flex items-center gap-3">
+          <div
+            className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${isDirty ? 'bg-[#FFF8E7] text-[#B88728]' : 'bg-[#F2FBF6] text-[#16A34A]'
+              }`}
+          >
+            {isDirty ? (
+              <AlertCircle className="w-5 h-5 animate-pulse" />
+            ) : (
+              <CheckCircle2 className="w-5 h-5" />
+            )}
+          </div>
+          <div>
+            <h3 className="text-xs sm:text-sm font-semibold text-[#1F1D1B] flex items-center gap-2">
+              <span>{isDirty ? 'Ada Perubahan Belum Disimpan' : 'Semua Teks Tersimpan'}</span>
+              {isDirty && (
+                <span className="text-[10px] bg-[#FEF3C7] text-[#92400E] font-medium px-2 py-0.5 rounded-full border border-[#FDE68A]">
+                  Draft belum disimpan
+                </span>
+              )}
+              {saveSuccessNotice && (
+                <span className="text-[10px] bg-[#DCFCE7] text-[#15803D] font-medium px-2 py-0.5 rounded-full border border-[#BBF7D0]">
+                  Tersimpan ke database!
+                </span>
+              )}
+            </h3>
+            <p className="text-[11px] text-[#786E64] font-light mt-0.5">
+              {isDirty
+                ? 'Ketik bebas dan cepat tanpa beban. Klik "Simpan Perubahan" jika sudah selesai mengedit.'
+                : 'Perubahan teks tidak disimpan otomatis setiap ketik huruf, melainkan hanya saat Anda menekan tombol Simpan.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+          {isDirty && (
+            <button
+              type="button"
+              onClick={handleDiscard}
+              disabled={isSavingActive}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs text-[#786E64] hover:text-[#1F1D1B] hover:bg-[#F2ECE1] transition-colors cursor-pointer font-medium"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Batal</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={!isDirty || isSavingActive}
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-medium transition-all shadow-sm cursor-pointer ${isDirty
+                ? 'bg-[#242220] hover:bg-[#383431] text-[#FAF8F5] active:scale-[0.98]'
+                : 'bg-[#E8DFD3]/60 text-[#A69C92] cursor-not-allowed'
+              }`}
+          >
+            <Save className={`w-3.5 h-3.5 ${isDirty ? 'text-[#D4AF37]' : 'text-[#A69C92]'}`} />
+            <span>
+              {isSavingActive ? 'Menyimpan...' : 'Simpan Perubahan'}
+            </span>
+          </button>
+        </div>
+      </div>
+
       <div className="mb-2">
         <h3 className="font-serif text-2xl text-[#1F1D1B] font-medium">
           Editor Konten Undangan
@@ -282,6 +586,68 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
 
         {openSection === 'opening' && (
           <div className="p-5 border-t border-[#EFE8DC] bg-[#FAF8F5]/30 space-y-4 text-xs">
+            {/* Synchronized Couple Names & Event Date on Cover */}
+            <div className="p-3.5 rounded-xl bg-white border border-[#E8DFD3] space-y-3">
+              <div className="flex items-center justify-between pb-1.5 border-b border-[#F5EFE6]">
+                <span className="font-semibold text-[11px] text-[#242220] flex items-center gap-1.5">
+                  <Heart className="w-3.5 h-3.5 text-[#C5A059]" />
+                  <span>Nama Mempelai &amp; Tanggal Acara di Cover</span>
+                </span>
+                <span className="text-[10px] text-[#A69C92] bg-[#FAF8F5] px-2 py-0.5 rounded-md border border-[#E8DFD3]">
+                  Terhubung ke Hero &amp; Halaman Undangan
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
+                    Nama Mempelai Wanita
+                  </label>
+                  <input
+                    type="text"
+                    value={content.hero.brideName}
+                    onChange={(e) => updateHero({ brideName: e.target.value })}
+                    placeholder="Resti"
+                    className="w-full px-3 py-2 bg-[#FAF8F5] border border-[#E8DFD3] rounded-xl focus:outline-none focus:border-[#C5A059]"
+                  />
+                  <p className="text-[10px] text-[#8C827A] mt-0.5">Otomatis sinkron dengan seksi Hero &amp; Profil Mempelai</p>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
+                    Nama Mempelai Pria
+                  </label>
+                  <input
+                    type="text"
+                    value={content.hero.groomName}
+                    onChange={(e) => updateHero({ groomName: e.target.value })}
+                    placeholder="Ramdan"
+                    className="w-full px-3 py-2 bg-[#FAF8F5] border border-[#E8DFD3] rounded-xl focus:outline-none focus:border-[#C5A059]"
+                  />
+                  <p className="text-[10px] text-[#8C827A] mt-0.5">Otomatis sinkron dengan seksi Hero &amp; Profil Mempelai</p>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
+                  Tanggal Acara (Tampil di Cover &amp; Hero)
+                </label>
+                <div className="relative">
+                  <Calendar className="w-3.5 h-3.5 text-[#8C827A] absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={content.hero.eventDateText || content.hero.eventDate || ''}
+                    onChange={(e) => updateHero({ eventDateText: e.target.value, eventDate: e.target.value })}
+                    placeholder="Sabtu, 24 Oktober 2026"
+                    className="w-full pl-8.5 pr-3 py-2 bg-[#FAF8F5] border border-[#E8DFD3] rounded-xl focus:outline-none focus:border-[#C5A059]"
+                  />
+                </div>
+                <p className="text-[10px] text-[#8C827A] mt-0.5">
+                  Teks tanggal yang muncul di bawah nama mempelai pada cover pembuka dan badge tanggal Hero.
+                </p>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block font-medium text-[#3D3833] mb-1">Label Atas</label>
@@ -505,22 +871,20 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
               <button
                 type="button"
                 onClick={() => setActiveCoupleTab('bride')}
-                className={`flex-1 py-2 px-3 rounded-lg text-xs transition-all cursor-pointer text-center ${
-                  activeCoupleTab === 'bride'
+                className={`flex-1 py-2 px-3 rounded-lg text-xs transition-all cursor-pointer text-center ${activeCoupleTab === 'bride'
                     ? 'bg-white text-[#1F1D1B] shadow-xs border border-[#E8DFD3] font-semibold text-[#8C6D23]'
                     : 'text-[#70675F] hover:text-[#1F1D1B] font-medium'
-                }`}
+                  }`}
               >
                 1. Mempelai Wanita ({content.couple.bride.name || 'Resti'})
               </button>
               <button
                 type="button"
                 onClick={() => setActiveCoupleTab('groom')}
-                className={`flex-1 py-2 px-3 rounded-lg text-xs transition-all cursor-pointer text-center ${
-                  activeCoupleTab === 'groom'
+                className={`flex-1 py-2 px-3 rounded-lg text-xs transition-all cursor-pointer text-center ${activeCoupleTab === 'groom'
                     ? 'bg-white text-[#1F1D1B] shadow-xs border border-[#E8DFD3] font-semibold text-[#8C6D23]'
                     : 'text-[#70675F] hover:text-[#1F1D1B] font-medium'
-                }`}
+                  }`}
               >
                 2. Mempelai Pria ({content.couple.groom.name || 'Ramdan'})
               </button>
@@ -529,385 +893,475 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
             {/* Groom Details */}
             {activeCoupleTab === 'groom' && (
               <div className="p-4 sm:p-5 rounded-xl bg-white border border-[#EFE8DC] space-y-4">
-              <div className="flex items-center justify-between pb-2 border-b border-[#F0EAE1]">
-                <h5 className="font-semibold text-xs uppercase tracking-wider text-[#C5A059] flex items-center gap-1.5">
-                  <span>Mempelai Pria (Groom)</span>
-                </h5>
-                <span className="text-[10px] text-[#A69C92]">Tampil di landing page &amp; undangan</span>
-              </div>
-
-              {/* Names: Short Name & Full Name */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
-                    Nama Panggilan (Short Name)
-                  </label>
-                  <input
-                    type="text"
-                    value={content.couple.groom.name}
-                    onChange={(e) => updateGroom({ name: e.target.value })}
-                    placeholder="Ramdan"
-                    className="w-full px-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
-                  />
-                  <p className="text-[10px] text-[#A69C92] mt-0.5">Nama singkat yang tampil di cover &amp; headline</p>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
-                    Nama Lengkap &amp; Gelar
-                  </label>
-                  <input
-                    type="text"
-                    value={content.couple.groom.fullNameWithTitles || content.couple.groom.fullName}
-                    onChange={(e) => updateGroom({ fullNameWithTitles: e.target.value, fullName: e.target.value })}
-                    placeholder="Ramdan Pratama, S.T."
-                    className="w-full px-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
-                  />
-                  <p className="text-[10px] text-[#A69C92] mt-0.5">Nama resmi yang tampil di profil kartu mempelai</p>
-                </div>
-              </div>
-
-              {/* Parents Section */}
-              <div className="p-3 bg-[#FAF8F5]/80 rounded-xl border border-[#E8DFD3] space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-medium text-[#3D3833]">Data Orang Tua Mempelai Pria</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const auto = formatParentsString(
-                        content.couple.groom.childOrderText,
-                        content.couple.groom.fatherName,
-                        content.couple.groom.motherName
-                      );
-                      if (auto) updateGroom({ parents: auto });
-                    }}
-                    className="inline-flex items-center gap-1 text-[10px] text-[#C5A059] hover:text-[#9F7E3B] font-medium cursor-pointer"
-                    title="Buat ulang teks gabungan otomatis dari Urutan Anak, Nama Ayah, dan Ibu"
-                  >
-                    <RefreshCw className="w-3 h-3" />
-                    <span>Sinkronkan ke Teks Gabungan</span>
-                  </button>
+                <div className="flex items-center justify-between pb-2 border-b border-[#F0EAE1]">
+                  <h5 className="font-semibold text-xs uppercase tracking-wider text-[#C5A059] flex items-center gap-1.5">
+                    <span>Mempelai Pria (Groom)</span>
+                  </h5>
+                  <span className="text-[10px] text-[#A69C92]">Tampil di landing page &amp; undangan</span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* Names: Short Name & Full Name */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[10px] text-[#70675F] mb-1">Urutan Anak</label>
+                    <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
+                      Nama Panggilan (Short Name)
+                    </label>
                     <input
                       type="text"
-                      value={content.couple.groom.childOrderText || ''}
-                      onChange={(e) => {
-                        const newChild = e.target.value;
-                        const auto = formatParentsString(
-                          newChild,
-                          content.couple.groom.fatherName,
-                          content.couple.groom.motherName
-                        );
-                        updateGroom({ childOrderText: newChild, parents: auto });
-                      }}
-                      placeholder="Putra kedua dari"
-                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      value={content.couple.groom.name}
+                      onChange={(e) => updateGroom({ name: e.target.value })}
+                      placeholder="Ramdan"
+                      className="w-full px-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
                     />
+                    <p className="text-[10px] text-[#A69C92] mt-0.5">Nama singkat yang tampil di cover &amp; headline</p>
                   </div>
                   <div>
-                    <label className="block text-[10px] text-[#70675F] mb-1">Nama Ayah</label>
+                    <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
+                      Nama Lengkap &amp; Gelar
+                    </label>
                     <input
                       type="text"
-                      value={content.couple.groom.fatherName || ''}
-                      onChange={(e) => {
-                        const newFather = e.target.value;
-                        const auto = formatParentsString(
-                          content.couple.groom.childOrderText,
-                          newFather,
-                          content.couple.groom.motherName
-                        );
-                        updateGroom({ fatherName: newFather, parents: auto });
-                      }}
-                      placeholder="Bpk. Bambang Haryanto"
-                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      value={content.couple.groom.fullNameWithTitles || content.couple.groom.fullName}
+                      onChange={(e) => updateGroom({ fullNameWithTitles: e.target.value, fullName: e.target.value })}
+                      placeholder="Ramdan Pratama, S.T."
+                      className="w-full px-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
                     />
+                    <p className="text-[10px] text-[#A69C92] mt-0.5">Nama resmi yang tampil di profil kartu mempelai</p>
                   </div>
-                  <div>
-                    <label className="block text-[10px] text-[#70675F] mb-1">Nama Ibu</label>
-                    <input
-                      type="text"
-                      value={content.couple.groom.motherName || ''}
-                      onChange={(e) => {
-                        const newMother = e.target.value;
+                </div>
+
+                {/* Parents Section */}
+                <div className="p-3 bg-[#FAF8F5]/80 rounded-xl border border-[#E8DFD3] space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-medium text-[#3D3833]">Data Orang Tua Mempelai Pria</span>
+                    <button
+                      type="button"
+                      onClick={() => {
                         const auto = formatParentsString(
                           content.couple.groom.childOrderText,
                           content.couple.groom.fatherName,
-                          newMother
+                          content.couple.groom.motherName
                         );
-                        updateGroom({ motherName: newMother, parents: auto });
+                        if (auto) updateGroom({ parents: auto });
                       }}
-                      placeholder="Ibu Endah Susilowati"
-                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
-                    />
+                      className="inline-flex items-center gap-1 text-[10px] text-[#C5A059] hover:text-[#9F7E3B] font-medium cursor-pointer"
+                      title="Buat ulang teks gabungan otomatis dari Urutan Anak, Nama Ayah, dan Ibu"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>Sinkronkan ke Teks Gabungan</span>
+                    </button>
                   </div>
-                </div>
 
-                <div>
-                  <label className="block text-[10px] font-medium text-[#70675F] mb-1">
-                    Teks Keterangan Orang Tua (Muncul di Halaman Undangan)
-                  </label>
-                  <input
-                    type="text"
-                    value={content.couple.groom.parents || ''}
-                    onChange={(e) => updateGroom({ parents: e.target.value })}
-                    placeholder="Putra kedua dari Bpk. Bambang Haryanto & Ibu Endah Susilowati"
-                    className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
-                  />
-                  <p className="text-[10px] text-[#A69C92] mt-0.5">
-                    Kalimat ini ditampilkan tepat di bawah nama mempelai pada landing page undangan
-                  </p>
-                </div>
-              </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[10px] text-[#70675F] mb-1">Urutan Anak</label>
+                      <input
+                        type="text"
+                        value={content.couple.groom.childOrderText || ''}
+                        onChange={(e) => {
+                          const newChild = e.target.value;
+                          const auto = formatParentsString(
+                            newChild,
+                            content.couple.groom.fatherName,
+                            content.couple.groom.motherName
+                          );
+                          updateGroom({ childOrderText: newChild, parents: auto });
+                        }}
+                        placeholder="Putra kedua dari"
+                        className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-[#70675F] mb-1">Nama Ayah</label>
+                      <input
+                        type="text"
+                        value={content.couple.groom.fatherName || ''}
+                        onChange={(e) => {
+                          const newFather = e.target.value;
+                          const auto = formatParentsString(
+                            content.couple.groom.childOrderText,
+                            newFather,
+                            content.couple.groom.motherName
+                          );
+                          updateGroom({ fatherName: newFather, parents: auto });
+                        }}
+                        placeholder="Bpk. Bambang Haryanto"
+                        className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-[#70675F] mb-1">Nama Ibu</label>
+                      <input
+                        type="text"
+                        value={content.couple.groom.motherName || ''}
+                        onChange={(e) => {
+                          const newMother = e.target.value;
+                          const auto = formatParentsString(
+                            content.couple.groom.childOrderText,
+                            content.couple.groom.fatherName,
+                            newMother
+                          );
+                          updateGroom({ motherName: newMother, parents: auto });
+                        }}
+                        placeholder="Ibu Endah Susilowati"
+                        className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      />
+                    </div>
+                  </div>
 
-              {/* Instagram & Bio */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-medium text-[#3D3833] mb-1 flex items-center gap-1">
-                    <Instagram className="w-3 h-3 text-[#C5A059]" />
-                    <span>Akun Instagram Mempelai Pria</span>
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-2 text-[#A69C92] text-xs">@</span>
+                  <div>
+                    <label className="block text-[10px] font-medium text-[#70675F] mb-1">
+                      Teks Keterangan Orang Tua (Muncul di Halaman Undangan)
+                    </label>
                     <input
                       type="text"
-                      value={(content.couple.groom.instagram || '').replace(/^@/, '')}
-                      onChange={(e) => {
-                        const val = e.target.value.trim().replace(/^@/, '');
-                        updateGroom({ instagram: val ? `@${val}` : '' });
-                      }}
-                      placeholder="ramdanpratama"
-                      className="w-full pl-7 pr-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      value={content.couple.groom.parents || ''}
+                      onChange={(e) => updateGroom({ parents: e.target.value })}
+                      placeholder="Putra kedua dari Bpk. Bambang Haryanto & Ibu Endah Susilowati"
+                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
                     />
+                    <p className="text-[10px] text-[#A69C92] mt-0.5">
+                      Kalimat ini ditampilkan tepat di bawah nama mempelai pada landing page undangan
+                    </p>
                   </div>
-                  <p className="text-[10px] text-[#A69C92] mt-0.5">Tautan tombol Instagram di kartu profil (opsional)</p>
                 </div>
 
+                {/* Instagram & Bio */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-[#3D3833] mb-1 flex items-center gap-1">
+                      <Instagram className="w-3 h-3 text-[#C5A059]" />
+                      <span>Akun Instagram Mempelai Pria</span>
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-2 text-[#A69C92] text-xs">@</span>
+                      <input
+                        type="text"
+                        value={(content.couple.groom.instagram || '').replace(/^@/, '')}
+                        onChange={(e) => {
+                          const val = e.target.value.trim().replace(/^@/, '');
+                          updateGroom({ instagram: val ? `@${val}` : '' });
+                        }}
+                        placeholder="ramdanpratama"
+                        className="w-full pl-7 pr-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      />
+                    </div>
+                    <p className="text-[10px] text-[#A69C92] mt-0.5">Tautan tombol Instagram di kartu profil (opsional)</p>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
+                      Deskripsi / Bio Singkat Mempelai Pria
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={content.couple.groom.description || ''}
+                      onChange={(e) => updateGroom({ description: e.target.value })}
+                      placeholder="Pribadi yang penuh semangat dengan kecintaan mendalam pada arsitektur..."
+                      className="w-full px-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059] leading-relaxed"
+                    />
+                    <p className="text-[10px] text-[#A69C92] mt-0.5">Kutipan atau deskripsi kepribadian di bawah profil (opsional)</p>
+                  </div>
+                </div>
+
+                {/* Photo */}
                 <div>
-                  <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
-                    Deskripsi / Bio Singkat Mempelai Pria
-                  </label>
-                  <textarea
-                    rows={2}
-                    value={content.couple.groom.description || ''}
-                    onChange={(e) => updateGroom({ description: e.target.value })}
-                    placeholder="Pribadi yang penuh semangat dengan kecintaan mendalam pada arsitektur..."
-                    className="w-full px-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059] leading-relaxed"
+                  <ImageUploaderField
+                    label="Foto Potret Mempelai Pria"
+                    sublabel="Format JPG/PNG dengan seret & lepas atau pilih dari galeri media"
+                    value={content.couple.groom.photoUrl || content.couple.groom.image || ''}
+                    onChange={(url) => updateGroom({ photoUrl: url, image: url })}
+                    category="couple"
+                    aspectRatio="portrait"
+                    placeholderName="Mempelai Pria"
                   />
-                  <p className="text-[10px] text-[#A69C92] mt-0.5">Kutipan atau deskripsi kepribadian di bawah profil (opsional)</p>
                 </div>
               </div>
-
-              {/* Photo */}
-              <div>
-                <ImageUploaderField
-                  label="Foto Potret Mempelai Pria"
-                  sublabel="Format JPG/PNG dengan seret & lepas atau pilih dari galeri media"
-                  value={content.couple.groom.photoUrl || content.couple.groom.image || ''}
-                  onChange={(url) => updateGroom({ photoUrl: url, image: url })}
-                  category="couple"
-                  aspectRatio="portrait"
-                  placeholderName="Mempelai Pria"
-                />
-              </div>
-            </div>
             )}
 
             {/* Bride Details */}
             {activeCoupleTab === 'bride' && (
               <div className="p-4 sm:p-5 rounded-xl bg-white border border-[#EFE8DC] space-y-4">
-              <div className="flex items-center justify-between pb-2 border-b border-[#F0EAE1]">
-                <h5 className="font-semibold text-xs uppercase tracking-wider text-[#C5A059] flex items-center gap-1.5">
-                  <span>Mempelai Wanita (Bride)</span>
-                </h5>
-                <span className="text-[10px] text-[#A69C92]">Tampil di landing page &amp; undangan</span>
-              </div>
-
-              {/* Names: Short Name & Full Name */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
-                    Nama Panggilan (Short Name)
-                  </label>
-                  <input
-                    type="text"
-                    value={content.couple.bride.name}
-                    onChange={(e) => updateBride({ name: e.target.value })}
-                    placeholder="Resti"
-                    className="w-full px-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
-                  />
-                  <p className="text-[10px] text-[#A69C92] mt-0.5">Nama singkat yang tampil di cover &amp; headline</p>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
-                    Nama Lengkap &amp; Gelar
-                  </label>
-                  <input
-                    type="text"
-                    value={content.couple.bride.fullNameWithTitles || content.couple.bride.fullName}
-                    onChange={(e) => updateBride({ fullNameWithTitles: e.target.value, fullName: e.target.value })}
-                    placeholder="Resti Azzahra, S.Ds."
-                    className="w-full px-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
-                  />
-                  <p className="text-[10px] text-[#A69C92] mt-0.5">Nama resmi yang tampil di profil kartu mempelai</p>
-                </div>
-              </div>
-
-              {/* Parents Section */}
-              <div className="p-3 bg-[#FAF8F5]/80 rounded-xl border border-[#E8DFD3] space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-medium text-[#3D3833]">Data Orang Tua Mempelai Wanita</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const auto = formatParentsString(
-                        content.couple.bride.childOrderText,
-                        content.couple.bride.fatherName,
-                        content.couple.bride.motherName
-                      );
-                      if (auto) updateBride({ parents: auto });
-                    }}
-                    className="inline-flex items-center gap-1 text-[10px] text-[#C5A059] hover:text-[#9F7E3B] font-medium cursor-pointer"
-                    title="Buat ulang teks gabungan otomatis dari Urutan Anak, Nama Ayah, dan Ibu"
-                  >
-                    <RefreshCw className="w-3 h-3" />
-                    <span>Sinkronkan ke Teks Gabungan</span>
-                  </button>
+                <div className="flex items-center justify-between pb-2 border-b border-[#F0EAE1]">
+                  <h5 className="font-semibold text-xs uppercase tracking-wider text-[#C5A059] flex items-center gap-1.5">
+                    <span>Mempelai Wanita (Bride)</span>
+                  </h5>
+                  <span className="text-[10px] text-[#A69C92]">Tampil di landing page &amp; undangan</span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* Names: Short Name & Full Name */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[10px] text-[#70675F] mb-1">Urutan Anak</label>
+                    <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
+                      Nama Panggilan (Short Name)
+                    </label>
                     <input
                       type="text"
-                      value={content.couple.bride.childOrderText || ''}
-                      onChange={(e) => {
-                        const newChild = e.target.value;
-                        const auto = formatParentsString(
-                          newChild,
-                          content.couple.bride.fatherName,
-                          content.couple.bride.motherName
-                        );
-                        updateBride({ childOrderText: newChild, parents: auto });
-                      }}
-                      placeholder="Putri pertama dari"
-                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      value={content.couple.bride.name}
+                      onChange={(e) => updateBride({ name: e.target.value })}
+                      placeholder="Resti"
+                      className="w-full px-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
                     />
+                    <p className="text-[10px] text-[#A69C92] mt-0.5">Nama singkat yang tampil di cover &amp; headline</p>
                   </div>
                   <div>
-                    <label className="block text-[10px] text-[#70675F] mb-1">Nama Ayah</label>
+                    <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
+                      Nama Lengkap &amp; Gelar
+                    </label>
                     <input
                       type="text"
-                      value={content.couple.bride.fatherName || ''}
-                      onChange={(e) => {
-                        const newFather = e.target.value;
-                        const auto = formatParentsString(
-                          content.couple.bride.childOrderText,
-                          newFather,
-                          content.couple.bride.motherName
-                        );
-                        updateBride({ fatherName: newFather, parents: auto });
-                      }}
-                      placeholder="Bpk. Ir. Hendra Gunawan"
-                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      value={content.couple.bride.fullNameWithTitles || content.couple.bride.fullName}
+                      onChange={(e) => updateBride({ fullNameWithTitles: e.target.value, fullName: e.target.value })}
+                      placeholder="Resti Azzahra, S.Ds."
+                      className="w-full px-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
                     />
+                    <p className="text-[10px] text-[#A69C92] mt-0.5">Nama resmi yang tampil di profil kartu mempelai</p>
                   </div>
-                  <div>
-                    <label className="block text-[10px] text-[#70675F] mb-1">Nama Ibu</label>
-                    <input
-                      type="text"
-                      value={content.couple.bride.motherName || ''}
-                      onChange={(e) => {
-                        const newMother = e.target.value;
+                </div>
+
+                {/* Parents Section */}
+                <div className="p-3 bg-[#FAF8F5]/80 rounded-xl border border-[#E8DFD3] space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-medium text-[#3D3833]">Data Orang Tua Mempelai Wanita</span>
+                    <button
+                      type="button"
+                      onClick={() => {
                         const auto = formatParentsString(
                           content.couple.bride.childOrderText,
                           content.couple.bride.fatherName,
-                          newMother
+                          content.couple.bride.motherName
                         );
-                        updateBride({ motherName: newMother, parents: auto });
+                        if (auto) updateBride({ parents: auto });
                       }}
-                      placeholder="Ibu Maya Savitri"
-                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
-                    />
+                      className="inline-flex items-center gap-1 text-[10px] text-[#C5A059] hover:text-[#9F7E3B] font-medium cursor-pointer"
+                      title="Buat ulang teks gabungan otomatis dari Urutan Anak, Nama Ayah, dan Ibu"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>Sinkronkan ke Teks Gabungan</span>
+                    </button>
                   </div>
-                </div>
 
-                <div>
-                  <label className="block text-[10px] font-medium text-[#70675F] mb-1">
-                    Teks Keterangan Orang Tua (Muncul di Halaman Undangan)
-                  </label>
-                  <input
-                    type="text"
-                    value={content.couple.bride.parents || ''}
-                    onChange={(e) => updateBride({ parents: e.target.value })}
-                    placeholder="Putri pertama dari Bpk. Ir. Hendra Gunawan & Ibu Maya Savitri"
-                    className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
-                  />
-                  <p className="text-[10px] text-[#A69C92] mt-0.5">
-                    Kalimat ini ditampilkan tepat di bawah nama mempelai pada landing page undangan
-                  </p>
-                </div>
-              </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[10px] text-[#70675F] mb-1">Urutan Anak</label>
+                      <input
+                        type="text"
+                        value={content.couple.bride.childOrderText || ''}
+                        onChange={(e) => {
+                          const newChild = e.target.value;
+                          const auto = formatParentsString(
+                            newChild,
+                            content.couple.bride.fatherName,
+                            content.couple.bride.motherName
+                          );
+                          updateBride({ childOrderText: newChild, parents: auto });
+                        }}
+                        placeholder="Putri pertama dari"
+                        className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-[#70675F] mb-1">Nama Ayah</label>
+                      <input
+                        type="text"
+                        value={content.couple.bride.fatherName || ''}
+                        onChange={(e) => {
+                          const newFather = e.target.value;
+                          const auto = formatParentsString(
+                            content.couple.bride.childOrderText,
+                            newFather,
+                            content.couple.bride.motherName
+                          );
+                          updateBride({ fatherName: newFather, parents: auto });
+                        }}
+                        placeholder="Bpk. Ir. Hendra Gunawan"
+                        className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-[#70675F] mb-1">Nama Ibu</label>
+                      <input
+                        type="text"
+                        value={content.couple.bride.motherName || ''}
+                        onChange={(e) => {
+                          const newMother = e.target.value;
+                          const auto = formatParentsString(
+                            content.couple.bride.childOrderText,
+                            content.couple.bride.fatherName,
+                            newMother
+                          );
+                          updateBride({ motherName: newMother, parents: auto });
+                        }}
+                        placeholder="Ibu Maya Savitri"
+                        className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      />
+                    </div>
+                  </div>
 
-              {/* Instagram & Bio */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-medium text-[#3D3833] mb-1 flex items-center gap-1">
-                    <Instagram className="w-3 h-3 text-[#C5A059]" />
-                    <span>Akun Instagram Mempelai Wanita</span>
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-2 text-[#A69C92] text-xs">@</span>
+                  <div>
+                    <label className="block text-[10px] font-medium text-[#70675F] mb-1">
+                      Teks Keterangan Orang Tua (Muncul di Halaman Undangan)
+                    </label>
                     <input
                       type="text"
-                      value={(content.couple.bride.instagram || '').replace(/^@/, '')}
-                      onChange={(e) => {
-                        const val = e.target.value.trim().replace(/^@/, '');
-                        updateBride({ instagram: val ? `@${val}` : '' });
-                      }}
-                      placeholder="restiazzahra"
-                      className="w-full pl-7 pr-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      value={content.couple.bride.parents || ''}
+                      onChange={(e) => updateBride({ parents: e.target.value })}
+                      placeholder="Putri pertama dari Bpk. Ir. Hendra Gunawan & Ibu Maya Savitri"
+                      className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
                     />
+                    <p className="text-[10px] text-[#A69C92] mt-0.5">
+                      Kalimat ini ditampilkan tepat di bawah nama mempelai pada landing page undangan
+                    </p>
                   </div>
-                  <p className="text-[10px] text-[#A69C92] mt-0.5">Tautan tombol Instagram di kartu profil (opsional)</p>
                 </div>
 
+                {/* Instagram & Bio */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-[#3D3833] mb-1 flex items-center gap-1">
+                      <Instagram className="w-3 h-3 text-[#C5A059]" />
+                      <span>Akun Instagram Mempelai Wanita</span>
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-2 text-[#A69C92] text-xs">@</span>
+                      <input
+                        type="text"
+                        value={(content.couple.bride.instagram || '').replace(/^@/, '')}
+                        onChange={(e) => {
+                          const val = e.target.value.trim().replace(/^@/, '');
+                          updateBride({ instagram: val ? `@${val}` : '' });
+                        }}
+                        placeholder="restiazzahra"
+                        className="w-full pl-7 pr-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
+                      />
+                    </div>
+                    <p className="text-[10px] text-[#A69C92] mt-0.5">Tautan tombol Instagram di kartu profil (opsional)</p>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
+                      Deskripsi / Bio Singkat Mempelai Wanita
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={content.couple.bride.description || ''}
+                      onChange={(e) => updateBride({ description: e.target.value })}
+                      placeholder="Sosok yang hangat dan ceria, memandang cinta sebagai ruang terindah..."
+                      className="w-full px-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059] leading-relaxed"
+                    />
+                    <p className="text-[10px] text-[#A69C92] mt-0.5">Kutipan atau deskripsi kepribadian di bawah profil (opsional)</p>
+                  </div>
+                </div>
+
+                {/* Photo */}
                 <div>
-                  <label className="block text-[11px] font-medium text-[#3D3833] mb-1">
-                    Deskripsi / Bio Singkat Mempelai Wanita
-                  </label>
-                  <textarea
-                    rows={2}
-                    value={content.couple.bride.description || ''}
-                    onChange={(e) => updateBride({ description: e.target.value })}
-                    placeholder="Sosok yang hangat dan ceria, memandang cinta sebagai ruang terindah..."
-                    className="w-full px-3 py-1.5 text-xs bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059] leading-relaxed"
+                  <ImageUploaderField
+                    label="Foto Potret Mempelai Wanita"
+                    sublabel="Format JPG/PNG dengan seret & lepas atau pilih dari galeri media"
+                    value={content.couple.bride.photoUrl || content.couple.bride.image || ''}
+                    onChange={(url) => updateBride({ photoUrl: url, image: url })}
+                    category="couple"
+                    aspectRatio="portrait"
+                    placeholderName="Mempelai Wanita"
                   />
-                  <p className="text-[10px] text-[#A69C92] mt-0.5">Kutipan atau deskripsi kepribadian di bawah profil (opsional)</p>
                 </div>
               </div>
-
-              {/* Photo */}
-              <div>
-                <ImageUploaderField
-                  label="Foto Potret Mempelai Wanita"
-                  sublabel="Format JPG/PNG dengan seret & lepas atau pilih dari galeri media"
-                  value={content.couple.bride.photoUrl || content.couple.bride.image || ''}
-                  onChange={(url) => updateBride({ photoUrl: url, image: url })}
-                  category="couple"
-                  aspectRatio="portrait"
-                  placeholderName="Mempelai Wanita"
-                />
-              </div>
-            </div>
             )}
           </div>
         )}
       </div>
 
-      {/* 4. Rangkaian Acara (Akad & Resepsi) */}
+      {/* 4. Hitung Mundur Acara (Countdown) */}
+      <div className="bg-white rounded-2xl border border-[#EFE8DC] overflow-hidden shadow-xs">
+        <button
+          onClick={() => toggleSection('countdown')}
+          className="w-full p-4 sm:p-5 flex items-center justify-between text-left hover:bg-[#FAF8F5]/60 transition-colors cursor-pointer"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-[#FAF8F5] flex items-center justify-center text-[#C5A059]">
+              <Timer className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-[#1F1D1B]">Hitung Mundur (Countdown Acara)</h4>
+              <p className="text-[11px] text-[#8C827A] font-light">
+                Judul, pengantar, dan sinkronisasi tanggal otomatis dengan seksi Hero
+              </p>
+            </div>
+          </div>
+          {openSection === 'countdown' ? (
+            <ChevronUp className="w-4 h-4 text-[#8C827A]" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-[#8C827A]" />
+          )}
+        </button>
+
+        {openSection === 'countdown' && (
+          <div className="p-5 border-t border-[#EFE8DC] bg-[#FAF8F5]/30 space-y-4 text-xs">
+            {/* Live Hero Sync Status Banner */}
+            <div className="p-3.5 bg-white rounded-xl border border-[#E8DFD3] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+              <div className="flex items-start gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-[#FAF5EE] border border-[#E8DFD3] flex items-center justify-center text-[#C5A059] shrink-0 mt-0.5">
+                  <Calendar className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <span className="text-[11px] font-semibold text-[#1F1D1B] block">
+                    Tanggal Acara yang Disinkronkan:
+                  </span>
+                  <p className="text-xs font-serif text-[#8C6D23] font-medium mt-0.5">
+                    {content.hero.eventDateText || content.hero.eventDate || 'Belum diatur'}
+                    {content.hero.eventTimeText ? ` (${content.hero.eventTimeText})` : ''}
+                  </p>
+                  <p className="text-[10px] text-[#8C827A] mt-0.5">
+                    Countdown otomatis menghitung mundur ke tanggal yang tertulis di seksi Hero &amp; Nama Mempelai.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const rawDate = content.hero.eventDateText || content.hero.eventDate;
+                  const autoISO = parseIndonesianDateToISO(rawDate, content.hero.eventTimeText);
+                  if (autoISO) {
+                    updateCountdown({ targetDateISO: autoISO });
+                    updateHero({ eventDateISO: autoISO });
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FAF5EE] hover:bg-[#F2ECE1] border border-[#E8DFD3] text-[#8C6D23] text-xs font-medium cursor-pointer transition-colors self-start sm:self-auto shrink-0"
+              >
+                <RefreshCw className="w-3 h-3 text-[#C5A059]" />
+                <span>Sinkronkan Ulang dari Hero</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block font-medium text-[#3D3833] mb-1">Judul Section</label>
+                <input
+                  type="text"
+                  value={content.countdown?.title || 'Menuju Hari Bahagia'}
+                  onChange={(e) => updateCountdown({ title: e.target.value })}
+                  placeholder="Menuju Hari Bahagia"
+                  className="w-full px-3 py-2 bg-white border border-[#E8DFD3] rounded-xl focus:outline-none focus:border-[#C5A059]"
+                />
+              </div>
+
+              <div>
+                <label className="block font-medium text-[#3D3833] mb-1">Subtitle / Pengantar</label>
+                <input
+                  type="text"
+                  value={content.countdown?.subtitle || ''}
+                  onChange={(e) => updateCountdown({ subtitle: e.target.value })}
+                  placeholder="Setiap detik yang terlewati membawa kami semakin dekat..."
+                  className="w-full px-3 py-2 bg-white border border-[#E8DFD3] rounded-xl focus:outline-none focus:border-[#C5A059]"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 5. Rangkaian Acara (Akad & Resepsi) */}
       <div className="bg-white rounded-2xl border border-[#EFE8DC] overflow-hidden shadow-xs">
         <button
           onClick={() => toggleSection('event')}
@@ -953,8 +1407,8 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                   <label className="block text-[11px] text-[#70675F] mb-1">Waktu Pelaksanaan</label>
                   <input
                     type="text"
-                    value={content.event.akad.timeFormatted}
-                    onChange={(e) => updateAkad({ timeFormatted: e.target.value })}
+                    value={content.event.akad.timeFormatted || content.event.akad.time || ''}
+                    onChange={(e) => updateAkad({ timeFormatted: e.target.value, time: e.target.value })}
                     placeholder="08:00 - 10:00 WIB"
                     className="w-full px-3 py-1.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg"
                   />
@@ -966,8 +1420,8 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                   <label className="block text-[11px] text-[#70675F] mb-1">Nama Tempat / Venue</label>
                   <input
                     type="text"
-                    value={content.event.akad.venueName}
-                    onChange={(e) => updateAkad({ venueName: e.target.value })}
+                    value={content.event.akad.venueName || content.event.akad.venue || ''}
+                    onChange={(e) => updateAkad({ venueName: e.target.value, venue: e.target.value })}
                     placeholder="Masjid Agung Al-Azhar"
                     className="w-full px-3 py-1.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg"
                   />
@@ -976,8 +1430,8 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                   <label className="block text-[11px] text-[#70675F] mb-1">Tanggal</label>
                   <input
                     type="text"
-                    value={content.event.akad.dateFormatted}
-                    onChange={(e) => updateAkad({ dateFormatted: e.target.value })}
+                    value={content.event.akad.dateFormatted || content.event.akad.date || ''}
+                    onChange={(e) => updateAkad({ dateFormatted: e.target.value, date: e.target.value })}
                     placeholder="Sabtu, 24 Oktober 2026"
                     className="w-full px-3 py-1.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg"
                   />
@@ -1027,8 +1481,8 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                   <label className="block text-[11px] text-[#70675F] mb-1">Waktu Pelaksanaan</label>
                   <input
                     type="text"
-                    value={content.event.resepsi.timeFormatted}
-                    onChange={(e) => updateResepsi({ timeFormatted: e.target.value })}
+                    value={content.event.resepsi.timeFormatted || content.event.resepsi.time || ''}
+                    onChange={(e) => updateResepsi({ timeFormatted: e.target.value, time: e.target.value })}
                     placeholder="11:00 - 14:00 WIB"
                     className="w-full px-3 py-1.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg"
                   />
@@ -1040,8 +1494,8 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                   <label className="block text-[11px] text-[#70675F] mb-1">Nama Tempat / Venue</label>
                   <input
                     type="text"
-                    value={content.event.resepsi.venueName}
-                    onChange={(e) => updateResepsi({ venueName: e.target.value })}
+                    value={content.event.resepsi.venueName || content.event.resepsi.venue || ''}
+                    onChange={(e) => updateResepsi({ venueName: e.target.value, venue: e.target.value })}
                     placeholder="The Tribrata Darmawangsa"
                     className="w-full px-3 py-1.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg"
                   />
@@ -1050,8 +1504,8 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                   <label className="block text-[11px] text-[#70675F] mb-1">Tanggal</label>
                   <input
                     type="text"
-                    value={content.event.resepsi.dateFormatted}
-                    onChange={(e) => updateResepsi({ dateFormatted: e.target.value })}
+                    value={content.event.resepsi.dateFormatted || content.event.resepsi.date || ''}
+                    onChange={(e) => updateResepsi({ dateFormatted: e.target.value, date: e.target.value })}
                     placeholder="Sabtu, 24 Oktober 2026"
                     className="w-full px-3 py-1.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg"
                   />
@@ -1116,12 +1570,7 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                 <input
                   type="text"
                   value={content.story.sectionTitle}
-                  onChange={(e) =>
-                    onChange({
-                      ...content,
-                      story: { ...content.story, sectionTitle: e.target.value },
-                    })
-                  }
+                  onChange={(e) => updateStory({ sectionTitle: e.target.value })}
                   className="w-full px-3 py-2 bg-white border border-[#E8DFD3] rounded-xl"
                 />
               </div>
@@ -1130,12 +1579,7 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                 <input
                   type="text"
                   value={content.story.sectionSubtitle || ''}
-                  onChange={(e) =>
-                    onChange({
-                      ...content,
-                      story: { ...content.story, sectionSubtitle: e.target.value },
-                    })
-                  }
+                  onChange={(e) => updateStory({ sectionSubtitle: e.target.value })}
                   className="w-full px-3 py-2 bg-white border border-[#E8DFD3] rounded-xl"
                 />
               </div>
@@ -1237,12 +1681,7 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                 <input
                   type="text"
                   value={content.gallery.sectionTitle}
-                  onChange={(e) =>
-                    onChange({
-                      ...content,
-                      gallery: { ...content.gallery, sectionTitle: e.target.value },
-                    })
-                  }
+                  onChange={(e) => updateGallery({ sectionTitle: e.target.value })}
                   placeholder="Potret Kenangan"
                   className="w-full px-3 py-2 bg-white border border-[#E8DFD3] rounded-xl"
                 />
@@ -1252,12 +1691,7 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                 <input
                   type="text"
                   value={content.gallery.sectionSubtitle || ''}
-                  onChange={(e) =>
-                    onChange({
-                      ...content,
-                      gallery: { ...content.gallery, sectionSubtitle: e.target.value },
-                    })
-                  }
+                  onChange={(e) => updateGallery({ sectionSubtitle: e.target.value })}
                   placeholder="Sentuh foto untuk memperbesar tampilan"
                   className="w-full px-3 py-2 bg-white border border-[#E8DFD3] rounded-xl"
                 />
@@ -1299,27 +1733,14 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                         <input
                           type="text"
                           value={img.caption || ''}
-                          onChange={(e) => {
-                            const updated = [...content.gallery.images];
-                            updated[index] = { ...updated[index], caption: e.target.value };
-                            onChange({
-                              ...content,
-                              gallery: { ...content.gallery, images: updated },
-                            });
-                          }}
+                          onChange={(e) => handleUpdateGalleryCaption(index, e.target.value)}
                           placeholder="Contoh: Momen Lamaran (atau kosongkan)"
                           className="w-full px-2.5 py-1.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg text-xs focus:outline-none focus:border-[#C5A059]"
                         />
                       </div>
                       <button
                         type="button"
-                        onClick={() => {
-                          const updated = content.gallery.images.filter((_, i) => i !== index);
-                          onChange({
-                            ...content,
-                            gallery: { ...content.gallery, images: updated },
-                          });
-                        }}
+                        onClick={() => handleDeleteGalleryImage(index)}
                         title="Hapus foto dari galeri"
                         className="text-[#EF4444] p-1.5 rounded-lg hover:bg-[#EF4444]/10 cursor-pointer self-end sm:self-center"
                       >
@@ -1366,12 +1787,7 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                 <input
                   type="text"
                   value={content.gift.sectionTitle}
-                  onChange={(e) =>
-                    onChange({
-                      ...content,
-                      gift: { ...content.gift, sectionTitle: e.target.value },
-                    })
-                  }
+                  onChange={(e) => updateGift({ sectionTitle: e.target.value })}
                   className="w-full px-3 py-2 bg-white border border-[#E8DFD3] rounded-xl"
                 />
               </div>
@@ -1380,12 +1796,7 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
                 <input
                   type="text"
                   value={content.gift.sectionSubtitle || ''}
-                  onChange={(e) =>
-                    onChange({
-                      ...content,
-                      gift: { ...content.gift, sectionSubtitle: e.target.value },
-                    })
-                  }
+                  onChange={(e) => updateGift({ sectionSubtitle: e.target.value })}
                   className="w-full px-3 py-2 bg-white border border-[#E8DFD3] rounded-xl"
                 />
               </div>
@@ -1552,6 +1963,44 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({ content, onChange 
           </div>
         )}
       </div>
+
+      {/* Floating Sticky Save Bar when Unsaved Changes Exist */}
+      {isDirty && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 w-[92%] max-w-xl bg-[#1F1D1B]/95 text-white backdrop-blur-md px-4 sm:px-5 py-3 rounded-2xl shadow-2xl border border-white/10 flex items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-4">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="w-2.5 h-2.5 rounded-full bg-[#E2B755] animate-ping shrink-0" />
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-white truncate">
+                Ada perubahan teks belum disimpan
+              </p>
+              <p className="text-[10px] text-white/60 truncate">
+                Klik tombol untuk menyimpan ke database cloud
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleDiscard}
+              disabled={isSavingActive}
+              className="px-3 py-1.5 rounded-lg text-xs text-white/70 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+            >
+              Batal
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={isSavingActive}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#D4AF37] hover:bg-[#C5A059] active:scale-95 text-[#1F1D1B] font-semibold text-xs transition-all shadow-md cursor-pointer disabled:opacity-60"
+            >
+              <Save className="w-3.5 h-3.5 text-[#1F1D1B]" />
+              <span>{isSavingActive ? 'Menyimpan...' : 'Simpan Perubahan'}</span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+
