@@ -278,11 +278,10 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
           }
         }}
         onClick={() => fileInputRef.current?.click()}
-        className={`rounded-2xl p-8 text-center transition-all cursor-pointer border-2 border-dashed shadow-xs ${
-          isDragging
+        className={`rounded-2xl p-8 text-center transition-all cursor-pointer border-2 border-dashed shadow-xs ${isDragging
             ? 'border-[#C5A059] bg-[#C5A059]/10 scale-[1.008]'
             : 'border-[#E8DFD3] bg-white hover:border-[#C5A059] hover:bg-[#FAF8F5]/50'
-        }`}
+          }`}
       >
         <input
           type="file"
@@ -335,11 +334,10 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
       <div className="border-b border-[#EFE8DC] flex gap-6 bg-transparent">
         <button
           onClick={() => setActiveTab('database')}
-          className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'database'
+          className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${activeTab === 'database'
               ? 'border-[#C5A059] text-[#242220]'
               : 'border-transparent text-[#8C827A] hover:text-[#242220]'
-          }`}
+            }`}
         >
           <HardDrive className="w-3.5 h-3.5" />
           <span>Foto di Database ({mediaList.length})</span>
@@ -347,11 +345,10 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
 
         <button
           onClick={() => setActiveTab('invitation-gallery')}
-          className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'invitation-gallery'
+          className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${activeTab === 'invitation-gallery'
               ? 'border-[#C5A059] text-[#242220]'
               : 'border-transparent text-[#8C827A] hover:text-[#242220]'
-          }`}
+            }`}
         >
           <Layers className="w-3.5 h-3.5" />
           <span>Galeri Undangan Aktif ({content.gallery.images.length})</span>
@@ -359,11 +356,10 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
 
         <button
           onClick={() => setActiveTab('presets')}
-          className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
-            activeTab === 'presets'
+          className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${activeTab === 'presets'
               ? 'border-[#C5A059] text-[#242220]'
               : 'border-transparent text-[#8C827A] hover:text-[#242220]'
-          }`}
+            }`}
         >
           <Sparkles className="w-3.5 h-3.5" />
           <span>Koleksi Foto Pilihan</span>
@@ -482,11 +478,10 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                         <button
                           type="button"
                           onClick={() => handleSetGroomPhoto(item.url)}
-                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${
-                            isGroom
+                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${isGroom
                               ? 'bg-blue-50 text-blue-700 border-blue-200'
                               : 'bg-white hover:bg-[#FAF8F5] text-[#242220] border-[#E8DFD3]'
-                          }`}
+                            }`}
                         >
                           <User className="w-3 h-3 text-blue-600" />
                           <span>{isGroom ? '✓ Pria Aktif' : 'Mempelai Pria'}</span>
@@ -495,11 +490,10 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                         <button
                           type="button"
                           onClick={() => handleSetBridePhoto(item.url)}
-                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${
-                            isBride
+                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${isBride
                               ? 'bg-rose-50 text-rose-700 border-rose-200'
                               : 'bg-white hover:bg-[#FAF8F5] text-[#242220] border-[#E8DFD3]'
-                          }`}
+                            }`}
                         >
                           <Heart className="w-3 h-3 text-rose-500" />
                           <span>{isBride ? '✓ Wanita Aktif' : 'Mempelai Wanita'}</span>
@@ -508,11 +502,10 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                         <button
                           type="button"
                           onClick={() => handleSetHeroPhoto(item.url)}
-                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${
-                            isHero
+                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${isHero
                               ? 'bg-[#FAF8F5] text-[#C5A059] border-[#C5A059] font-semibold'
                               : 'bg-white hover:bg-[#FAF8F5] text-[#242220] border-[#E8DFD3]'
-                          }`}
+                            }`}
                         >
                           <span>★ {isHero ? 'Cover Aktif' : 'Cover Hero'}</span>
                         </button>
@@ -520,11 +513,10 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                         <button
                           type="button"
                           onClick={() => handleAddToInvitationGallery(item.url, item.name)}
-                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${
-                            inGallery
+                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${inGallery
                               ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                               : 'bg-white hover:bg-[#FAF8F5] text-[#242220] border-[#E8DFD3]'
-                          }`}
+                            }`}
                         >
                           <Plus className="w-3 h-3 text-emerald-600" />
                           <span>{inGallery ? 'Ada di Galeri' : '+ Galeri'}</span>
@@ -586,14 +578,22 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                     <div className="p-2.5 bg-white border-t border-[#F0EAE1]">
                       <input
                         type="text"
-                        value={img.caption || ''}
-                        onChange={(e) => {
-                          const updated = [...content.gallery.images];
-                          updated[index] = { ...updated[index], caption: e.target.value };
-                          onChangeContent({
-                            ...content,
-                            gallery: { ...content.gallery, images: updated },
-                          });
+                        defaultValue={img.caption || ''}
+                        onBlur={(e) => {
+                          const val = e.target.value;
+                          if (val !== (img.caption || '')) {
+                            const updated = [...content.gallery.images];
+                            updated[index] = { ...updated[index], caption: val };
+                            onChangeContent({
+                              ...content,
+                              gallery: { ...content.gallery, images: updated },
+                            });
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            (e.target as HTMLInputElement).blur();
+                          }
                         }}
                         placeholder="Tulis caption foto..."
                         className="w-full text-xs text-[#242220] bg-transparent border-b border-transparent focus:border-[#C5A059] focus:outline-none"
