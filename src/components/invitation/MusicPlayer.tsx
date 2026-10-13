@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Volume2, VolumeX } from 'lucide-react';
-import { resolveAudioUrl } from '../../services/audioStorageService';
 
 interface MusicPlayerProps {
   musicUrl: string;
@@ -14,27 +13,8 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({ musicUrl, autoPlayTrig
 
   // Resolve audio URL (handles idb://, https://, etc.)
   useEffect(() => {
-    let isMounted = true;
-    if (!musicUrl) {
-      setResolvedSrc('');
-      return;
-    }
-
-    resolveAudioUrl(musicUrl)
-      .then((url) => {
-        if (isMounted) {
-          setResolvedSrc(url);
-        }
-      })
-      .catch((err) => {
-        console.warn('[MusicPlayer] Failed to resolve audio URL:', err);
-        if (isMounted) setResolvedSrc(musicUrl);
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [musicUrl]);
+    setResolvedSrc('/music/music.mp3');
+  }, []);
 
   // Autoplay trigger
   useEffect(() => {
