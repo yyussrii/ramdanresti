@@ -1,8 +1,8 @@
 // ============================================================================
 // MEDIA STORAGE SERVICE (Cross-Device Cloud Sync + Local IndexedDB Cache)
-// Automatically optimizes user-uploaded photos to sharp, web-optimized format (<500KB)
+// Automatically compresses uploaded photos to lightweight WebP/JPEG (< 180KB)
 // and syncs to Cloud Firestore under `/invitations/{invitationId}/media/{mediaId}`
-// so that uploaded photos appear instantly on ALL devices & guests' phones!
+// so that uploaded photos load fast & reliably on ALL devices & guests' phones!
 // ============================================================================
 
 import { doc, getDoc, setDoc, getDocs, collection, deleteDoc } from 'firebase/firestore';
@@ -32,9 +32,13 @@ export interface MediaItem {
 
 // In-memory cache for fast synchronous lookup
 const objectUrlCache = new Map<string, string>();
+// Deduplicate concurrent Firestore fetches for the same media ID
+const inFlightItemRequests = new Map<string, Promise<MediaItem | null>>();
+// Deduplicate concurrent getAllMediaItems calls
+let inFlightAllRequest: Promise<MediaItem[]> | null = null;
 
 /**
- * Format bytes into readable format (e.g. "450 KB")
+ * Format bytes into readable format (e.g. "145 KB")
  */
 export function formatBytes(bytes: number, decimals = 1): string {
   if (bytes === 0) return '0 Bytes';
@@ -70,15 +74,44 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 /**
- * Compress and optimize an image file for web display (< 600KB)
- * Produces crisp high-definition result that renders smoothly on all mobile & desktop screens
+ * Helper to save a media item silently to local IndexedDB
+ */
+async function saveToLocalIndexedDB(item: MediaItem): Promise<void> {
+  try {
+    const localDb = await openDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = localDb.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.put(item);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn('[MediaStorage] Local IndexedDB write warning:', err);
+  }
+}
+
+/**
+ * Detect best supported compressed image MIME type (WebP preferred: 30-45% smaller than JPEG)
+ */
+function encodeCanvasOptimized(canvas: HTMLCanvasElement, quality: number): { dataUrl: string; mimeType: string } {
+  const webpData = canvas.toDataURL('image/webp', quality);
+  if (webpData.startsWith('data:image/webp')) {
+    return { dataUrl: webpData, mimeType: 'image/webp' };
+  }
+  return { dataUrl: canvas.toDataURL('image/jpeg', quality), mimeType: 'image/jpeg' };
+}
+
+/**
+ * Compress and optimize an image file for fast mobile & cross-device delivery (< 180KB)
+ * Produces crisp high-definition result that renders smoothly without buffering
  */
 export async function optimizeImageForWeb(
   file: Blob | File,
-  maxWidth = 1600,
-  maxHeight = 1600,
-  quality = 0.85
-): Promise<{ dataUrl: string; thumbnailUrl: string; width: number; height: number; size: number }> {
+  maxWidth = 1080,
+  maxHeight = 1080,
+  initialQuality = 0.76
+): Promise<{ dataUrl: string; thumbnailUrl: string; width: number; height: number; size: number; mimeType: string }> {
   return new Promise((resolve) => {
     try {
       const img = new Image();
@@ -89,7 +122,7 @@ export async function optimizeImageForWeb(
           const originalWidth = img.width || 800;
           const originalHeight = img.height || 800;
 
-          // 1. Calculate Main Optimized Dimensions
+          // 1. Calculate Main Optimized Dimensions (max 1080px - sharp on retina mobile & desktop)
           let targetWidth = originalWidth;
           let targetHeight = originalHeight;
           if (targetWidth > maxWidth || targetHeight > maxHeight) {
@@ -104,15 +137,45 @@ export async function optimizeImageForWeb(
           const ctx = canvas.getContext('2d');
 
           let dataUrl = '';
+          let mimeType = 'image/jpeg';
+          let currentQuality = initialQuality;
+
           if (ctx) {
             ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-            dataUrl = canvas.toDataURL('image/jpeg', quality);
+            const encoded = encodeCanvasOptimized(canvas, currentQuality);
+            dataUrl = encoded.dataUrl;
+            mimeType = encoded.mimeType;
+
+            // Target <= 190KB Base64 (~140KB binary) for instant 4G mobile loading without lag/buffering
+            while (dataUrl.length > 190000 && currentQuality > 0.36) {
+              currentQuality -= 0.08;
+              targetWidth = Math.round(targetWidth * 0.88);
+              targetHeight = Math.round(targetHeight * 0.88);
+              canvas.width = targetWidth;
+              canvas.height = targetHeight;
+              ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+              const reEncoded = encodeCanvasOptimized(canvas, currentQuality);
+              dataUrl = reEncoded.dataUrl;
+              mimeType = reEncoded.mimeType;
+            }
+
+            // Hard safety guarantee: never exceed 420KB Base64 so Firestore 1MB limit is never breached
+            while (dataUrl.length > 420000 && targetWidth > 320) {
+              targetWidth = Math.round(targetWidth * 0.75);
+              targetHeight = Math.round(targetHeight * 0.75);
+              canvas.width = targetWidth;
+              canvas.height = targetHeight;
+              ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+              const reEncoded = encodeCanvasOptimized(canvas, 0.45);
+              dataUrl = reEncoded.dataUrl;
+              mimeType = reEncoded.mimeType;
+            }
           }
 
-          // 2. Calculate Lightweight Thumbnail Dimensions (max 360px)
+          // 2. Calculate Ultra-Lightweight Instant Thumbnail (max 220px, ~8KB)
           let thumbWidth = originalWidth;
           let thumbHeight = originalHeight;
-          const thumbMax = 360;
+          const thumbMax = 220;
           if (thumbWidth > thumbMax || thumbHeight > thumbMax) {
             const ratio = Math.min(thumbMax / thumbWidth, thumbMax / thumbHeight);
             thumbWidth = Math.round(thumbWidth * ratio);
@@ -127,12 +190,11 @@ export async function optimizeImageForWeb(
           let thumbnailUrl = '';
           if (thumbCtx) {
             thumbCtx.drawImage(img, 0, 0, thumbWidth, thumbHeight);
-            thumbnailUrl = thumbCanvas.toDataURL('image/jpeg', 0.8);
+            thumbnailUrl = encodeCanvasOptimized(thumbCanvas, 0.6).dataUrl;
           }
 
           URL.revokeObjectURL(tempUrl);
 
-          // Estimate byte size from dataUrl
           const approxSize = Math.round((dataUrl.length * 3) / 4);
 
           resolve({
@@ -141,6 +203,7 @@ export async function optimizeImageForWeb(
             width: originalWidth,
             height: originalHeight,
             size: approxSize,
+            mimeType,
           });
         } catch (err) {
           console.warn('[MediaStorage] Compression error:', err);
@@ -151,6 +214,7 @@ export async function optimizeImageForWeb(
             width: 0,
             height: 0,
             size: file.size,
+            mimeType: 'image/jpeg',
           });
         }
       };
@@ -163,6 +227,7 @@ export async function optimizeImageForWeb(
           width: 0,
           height: 0,
           size: file.size,
+          mimeType: 'image/jpeg',
         });
       };
 
@@ -174,6 +239,7 @@ export async function optimizeImageForWeb(
         width: 0,
         height: 0,
         size: file.size,
+        mimeType: 'image/jpeg',
       });
     }
   });
@@ -194,74 +260,65 @@ export async function saveMediaFile(
   const virtualUrl = `idb://${id}`;
   const fileName =
     options?.name ||
-    (file instanceof File && file.name ? file.name : `foto_${new Date().toISOString().slice(0, 10)}.jpg`);
+    (file instanceof File && file.name ? file.name : `foto_${new Date().toISOString().slice(0, 10)}.webp`);
 
   // Optimize and generate ready-to-display web dataUrl
-  const { dataUrl, thumbnailUrl, width, height, size } = await optimizeImageForWeb(file);
+  const { dataUrl, thumbnailUrl, width, height, size, mimeType } = await optimizeImageForWeb(file);
+
+  if (!dataUrl || !dataUrl.startsWith('data:image/')) {
+    throw new Error('Format gambar tidak dapat diproses oleh browser. Gunakan file JPG, PNG, atau WEBP.');
+  }
 
   const mediaItem: MediaItem = {
     id,
     name: fileName,
     size: size || file.size,
     formattedSize: formatBytes(size || file.size),
-    type: 'image/jpeg',
+    type: mimeType,
     createdAt: new Date().toISOString(),
     category: options?.category || 'general',
     url: virtualUrl,
-    blob: file,
     dataUrl,
     thumbnailUrl,
     width,
     height,
   };
 
-  // 1. Save to Local IndexedDB for instant offline access
-  try {
-    const localDb = await openDB();
-    await new Promise<void>((resolve, reject) => {
-      const tx = localDb.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      store.put(mediaItem);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch (idbErr) {
-    console.warn('[MediaStorage] Failed to save in IndexedDB:', idbErr);
-  }
+  // 1. Put in-memory cache immediately
+  objectUrlCache.set(id, dataUrl);
 
-  // 2. Put in-memory cache
-  if (dataUrl) {
-    objectUrlCache.set(id, dataUrl);
-  } else {
-    try {
-      const objUrl = URL.createObjectURL(file);
-      objectUrlCache.set(id, objUrl);
-    } catch {
-      // ignore
-    }
-  }
+  // 2. Save compressed payload to Local IndexedDB for instant offline access (no multi-MB raw blob bloat)
+  await saveToLocalIndexedDB(mediaItem);
 
-  // 3. Sync to Cloud Firestore if connected
-  if (isFirebaseConfigured && db && dataUrl) {
+  // 3. Sync to Cloud Firestore so all other devices & guests' phones can load it
+  if (isFirebaseConfigured && db) {
+    const cloudMediaRef = doc(db, 'invitations', INVITATION_ID, 'media', id);
+    const payload = {
+      id,
+      name: fileName,
+      size: mediaItem.size,
+      formattedSize: mediaItem.formattedSize,
+      type: mimeType,
+      createdAt: mediaItem.createdAt,
+      category: mediaItem.category,
+      url: virtualUrl,
+      dataUrl,
+      thumbnailUrl,
+      width,
+      height,
+    };
+
     try {
-      const cloudMediaRef = doc(db, 'invitations', INVITATION_ID, 'media', id);
-      await setDoc(cloudMediaRef, {
-        id,
-        name: fileName,
-        size: mediaItem.size,
-        formattedSize: mediaItem.formattedSize,
-        type: 'image/jpeg',
-        createdAt: mediaItem.createdAt,
-        category: mediaItem.category,
-        url: virtualUrl,
-        dataUrl,
-        thumbnailUrl,
-        width,
-        height,
-      });
-      console.info(`[MediaStorage] Successfully uploaded and synced ${fileName} to Cloud Firestore!`);
-    } catch (cloudErr) {
-      console.warn('[MediaStorage] Cloud Firestore media sync warning:', cloudErr);
+      await setDoc(cloudMediaRef, payload);
+      console.info(`[MediaStorage] Uploaded & synced ${fileName} (${mediaItem.formattedSize}) to Cloud Firestore!`);
+    } catch (firstErr) {
+      console.warn('[MediaStorage] First cloud sync attempt failed, retrying...', firstErr);
+      try {
+        await setDoc(cloudMediaRef, payload);
+      } catch (retryErr) {
+        console.error('[MediaStorage] Cloud Firestore media sync failed:', retryErr);
+        throw new Error('Foto tersimpan di perangkat ini, namun gagal disinkronkan ke Cloud Database. Periksa koneksi internet Anda.');
+      }
     }
   }
 
@@ -269,68 +326,82 @@ export async function saveMediaFile(
 }
 
 /**
- * Get all media items from Cloud Firestore + Local IndexedDB
+ * Get all media items from Cloud Firestore + Local IndexedDB (used in Admin Media Library)
  */
 export async function getAllMediaItems(): Promise<MediaItem[]> {
-  const mergedMap = new Map<string, MediaItem>();
-
-  // 1. Read from Local IndexedDB
-  try {
-    const localDb = await openDB();
-    const localItems = await new Promise<MediaItem[]>((resolve, reject) => {
-      const tx = localDb.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.getAll();
-      req.onsuccess = () => resolve((req.result || []) as MediaItem[]);
-      req.onerror = () => reject(req.error);
-    });
-
-    localItems.forEach((item) => {
-      mergedMap.set(item.id, item);
-      if (item.dataUrl) {
-        objectUrlCache.set(item.id, item.dataUrl);
-      } else if (item.blob && !objectUrlCache.has(item.id)) {
-        try {
-          const url = URL.createObjectURL(item.blob);
-          objectUrlCache.set(item.id, url);
-        } catch {
-          // ignore
-        }
-      }
-    });
-  } catch (e) {
-    console.warn('[MediaStorage] Local media read warning:', e);
+  if (inFlightAllRequest) {
+    return inFlightAllRequest;
   }
 
-  // 2. Read from Cloud Firestore (brings media uploaded from other devices)
-  if (isFirebaseConfigured && db) {
+  inFlightAllRequest = (async () => {
+    const mergedMap = new Map<string, MediaItem>();
+
+    // 1. Read from Local IndexedDB
     try {
-      const mediaCollection = collection(db, 'invitations', INVITATION_ID, 'media');
-      const snapshot = await getDocs(mediaCollection);
-      snapshot.forEach((docSnap) => {
-        const cloudData = docSnap.data() as MediaItem;
-        if (cloudData && cloudData.id) {
-          mergedMap.set(cloudData.id, cloudData);
-          if (cloudData.dataUrl) {
-            objectUrlCache.set(cloudData.id, cloudData.dataUrl);
+      const localDb = await openDB();
+      const localItems = await new Promise<MediaItem[]>((resolve, reject) => {
+        const tx = localDb.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const req = store.getAll();
+        req.onsuccess = () => resolve((req.result || []) as MediaItem[]);
+        req.onerror = () => reject(req.error);
+      });
+
+      localItems.forEach((item) => {
+        mergedMap.set(item.id, item);
+        if (item.dataUrl) {
+          objectUrlCache.set(item.id, item.dataUrl);
+        } else if (item.blob && !objectUrlCache.has(item.id)) {
+          try {
+            const url = URL.createObjectURL(item.blob);
+            objectUrlCache.set(item.id, url);
+          } catch {
+            // ignore
           }
         }
       });
-    } catch (cloudErr) {
-      console.warn('[MediaStorage] Cloud media read error:', cloudErr);
+    } catch (e) {
+      console.warn('[MediaStorage] Local media read warning:', e);
     }
-  }
 
-  const items = Array.from(mergedMap.values());
-  items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  return items;
+    // 2. Read from Cloud Firestore (brings media uploaded from other devices)
+    if (isFirebaseConfigured && db) {
+      try {
+        const mediaCollection = collection(db, 'invitations', INVITATION_ID, 'media');
+        const snapshot = await getDocs(mediaCollection);
+        snapshot.forEach((docSnap) => {
+          const cloudData = docSnap.data() as MediaItem;
+          if (cloudData && cloudData.id) {
+            mergedMap.set(cloudData.id, cloudData);
+            if (cloudData.dataUrl) {
+              objectUrlCache.set(cloudData.id, cloudData.dataUrl);
+            }
+            // Persist cloud items locally for fast subsequent visits
+            saveToLocalIndexedDB(cloudData);
+          }
+        });
+      } catch (cloudErr) {
+        console.warn('[MediaStorage] Cloud media read error:', cloudErr);
+      }
+    }
+
+    const items = Array.from(mergedMap.values());
+    items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return items;
+  })();
+
+  try {
+    return await inFlightAllRequest;
+  } finally {
+    inFlightAllRequest = null;
+  }
 }
 
 /**
- * Get single media item by ID
+ * Get single media item by ID with in-flight deduplication and automatic local caching
  */
 export async function getMediaItem(id: string): Promise<MediaItem | null> {
-  // 1. Try in-memory cache
+  // 1. Try in-memory cache synchronously
   if (objectUrlCache.has(id)) {
     const cachedUrl = objectUrlCache.get(id)!;
     return {
@@ -338,66 +409,83 @@ export async function getMediaItem(id: string): Promise<MediaItem | null> {
       name: id,
       size: 0,
       formattedSize: '0 KB',
-      type: 'image/jpeg',
+      type: 'image/webp',
       createdAt: new Date().toISOString(),
       url: `idb://${id}`,
       dataUrl: cachedUrl,
     };
   }
 
-  // 2. Try Local IndexedDB
-  try {
-    const localDb = await openDB();
-    const item = await new Promise<MediaItem | null>((resolve, reject) => {
-      const tx = localDb.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.get(id);
-      req.onsuccess = () => resolve((req.result as MediaItem) || null);
-      req.onerror = () => reject(req.error);
-    });
-
-    if (item) {
-      if (item.dataUrl) {
-        objectUrlCache.set(item.id, item.dataUrl);
-      } else if (item.blob && !objectUrlCache.has(item.id)) {
-        try {
-          const url = URL.createObjectURL(item.blob);
-          objectUrlCache.set(item.id, url);
-        } catch {
-          // ignore
-        }
-      }
-      return item;
-    }
-  } catch {
-    // continue to cloud check
+  // 2. Deduplicate concurrent requests for the exact same ID
+  const existingRequest = inFlightItemRequests.get(id);
+  if (existingRequest) {
+    return existingRequest;
   }
 
-  // 3. Fallback to Cloud Firestore for other devices
-  if (isFirebaseConfigured && db) {
+  const fetchPromise = (async (): Promise<MediaItem | null> => {
+    // 2a. Try Local IndexedDB
     try {
-      const cloudRef = doc(db, 'invitations', INVITATION_ID, 'media', id);
-      const docSnap = await getDoc(cloudRef);
-      if (docSnap.exists()) {
-        const cloudItem = docSnap.data() as MediaItem;
-        if (cloudItem.dataUrl) {
-          objectUrlCache.set(id, cloudItem.dataUrl);
-        }
-        return cloudItem;
-      }
-    } catch (err) {
-      console.warn('[MediaStorage] Cloud item fetch error:', err);
-    }
-  }
+      const localDb = await openDB();
+      const item = await new Promise<MediaItem | null>((resolve, reject) => {
+        const tx = localDb.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const req = store.get(id);
+        req.onsuccess = () => resolve((req.result as MediaItem) || null);
+        req.onerror = () => reject(req.error);
+      });
 
-  return null;
+      if (item) {
+        if (item.dataUrl) {
+          objectUrlCache.set(item.id, item.dataUrl);
+          return item;
+        } else if (item.blob) {
+          try {
+            const url = URL.createObjectURL(item.blob);
+            objectUrlCache.set(item.id, url);
+            return item;
+          } catch {
+            // continue to cloud fallback if blob failed
+          }
+        }
+      }
+    } catch {
+      // continue to cloud check
+    }
+
+    // 2b. Fallback to Cloud Firestore for other devices
+    if (isFirebaseConfigured && db) {
+      try {
+        const cloudRef = doc(db, 'invitations', INVITATION_ID, 'media', id);
+        const docSnap = await getDoc(cloudRef);
+        if (docSnap.exists()) {
+          const cloudItem = docSnap.data() as MediaItem;
+          if (cloudItem.dataUrl) {
+            objectUrlCache.set(id, cloudItem.dataUrl);
+          }
+          // Save to remote device's local IndexedDB so all future visits load instantly from disk
+          saveToLocalIndexedDB(cloudItem);
+          return cloudItem;
+        }
+      } catch (err) {
+        console.warn('[MediaStorage] Cloud item fetch error:', err);
+      }
+    }
+
+    return null;
+  })();
+
+  inFlightItemRequests.set(id, fetchPromise);
+  try {
+    return await fetchPromise;
+  } finally {
+    inFlightItemRequests.delete(id);
+  }
 }
 
 /**
  * Delete a media item from IndexedDB and Cloud Firestore
  */
 export async function deleteMediaItem(id: string): Promise<void> {
-  // Clear cache
   if (objectUrlCache.has(id)) {
     const val = objectUrlCache.get(id);
     if (val && val.startsWith('blob:')) {
@@ -410,7 +498,6 @@ export async function deleteMediaItem(id: string): Promise<void> {
     objectUrlCache.delete(id);
   }
 
-  // Delete from local
   try {
     const localDb = await openDB();
     await new Promise<void>((resolve, reject) => {
@@ -423,7 +510,6 @@ export async function deleteMediaItem(id: string): Promise<void> {
     console.warn('[MediaStorage] Failed to delete from local DB:', err);
   }
 
-  // Delete from Cloud Firestore
   if (isFirebaseConfigured && db) {
     try {
       const cloudRef = doc(db, 'invitations', INVITATION_ID, 'media', id);
@@ -467,7 +553,7 @@ export async function resolveImageUrl(url: string | undefined): Promise<string> 
     return objectUrlCache.get(key)!;
   }
 
-  // 2. Fetch from IndexedDB / Cloud Firestore
+  // 2. Fetch from IndexedDB / Cloud Firestore (deduplicated)
   const item = await getMediaItem(key);
   if (item) {
     if (item.dataUrl) {
@@ -492,7 +578,35 @@ export async function resolveImageUrl(url: string | undefined): Promise<string> 
 }
 
 /**
- * Preload all stored media items on application startup into memory
+ * Targeted prefetch ONLY for specific idb:// URLs actually used in an invitation.
+ * Fetches priority URLs first (e.g. Hero), then batches remaining URLs (max 3 concurrent)
+ * so Firestore & mobile bandwidth are never congested by unused media library files.
+ */
+export async function prefetchMediaIds(urls: (string | undefined | null)[]): Promise<void> {
+  const uniqueIds: string[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of urls) {
+    if (!raw || (!raw.startsWith('idb://') && !raw.startsWith('indexeddb://'))) continue;
+    const key = raw.replace(/^(idb|indexeddb):\/\//, '');
+    if (!seen.has(key) && !objectUrlCache.has(key)) {
+      seen.add(key);
+      uniqueIds.push(key);
+    }
+  }
+
+  if (uniqueIds.length === 0) return;
+
+  // Fetch in small batches of 3 to avoid saturating slow mobile connections
+  const batchSize = 3;
+  for (let i = 0; i < uniqueIds.length; i += batchSize) {
+    const batch = uniqueIds.slice(i, i + batchSize);
+    await Promise.all(batch.map((id) => getMediaItem(id).catch(() => null)));
+  }
+}
+
+/**
+ * Preload all stored media items into memory (intended for Admin Dashboard only)
  */
 export async function preloadMediaCache(): Promise<void> {
   try {
@@ -501,4 +615,3 @@ export async function preloadMediaCache(): Promise<void> {
     console.warn('[MediaStorage] Preload error:', err);
   }
 }
-

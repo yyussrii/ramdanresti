@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Guest, Invitation, SectionLayoutConfig } from '../types';
 import { dbService } from '../services/dbService';
 import { CoverOpening } from '../components/invitation/CoverOpening';
@@ -12,9 +12,14 @@ import { RsvpSection } from '../components/invitation/RsvpSection';
 import { WishesSection } from '../components/invitation/WishesSection';
 import { GiftSection } from '../components/invitation/GiftSection';
 import { ClosingSection } from '../components/invitation/ClosingSection';
-import { MusicPlayer } from '../components/invitation/MusicPlayer';
-import { NotFoundView } from '../components/invitation/NotFoundView';
+import { MusicPlayer, MusicPlayerHandle } from '../components/invitation/MusicPlayer';
 import { DEFAULT_CONTENT_CONFIG } from '../constants/cmsDefaults';
+import { prefetchMediaIds } from '../services/mediaStorageService';
+import { getOptimizedImageUrl } from '../utils/imageOptimizer';
+
+const NotFoundView = lazy(() =>
+  import('../components/invitation/NotFoundView').then((m) => ({ default: m.NotFoundView }))
+);
 
 interface GuestInvitationPageProps {
   slug: string;
@@ -40,6 +45,15 @@ export const GuestInvitationPage: React.FC<GuestInvitationPageProps> = ({
   const [isOpened, setIsOpened] = useState(initialOpened);
 
   const mainContentRef = useRef<HTMLElement | null>(null);
+  const musicPlayerRef = useRef<MusicPlayerHandle | null>(null);
+  const scrollCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    return () => {
+      scrollCleanupRef.current?.();
+      scrollCleanupRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (customInvitation) {
@@ -108,6 +122,26 @@ export const GuestInvitationPage: React.FC<GuestInvitationPageProps> = ({
       // 1. Fetch master invitation (guests receive the published version)
       const invData = await dbService.getInvitation(undefined, 'published');
       setInvitation(invData);
+
+      // Prioritized prefetch: Hero first, then Couple & Gallery (never downloads unused media library items)
+      const heroImgUrl = invData.content?.hero?.heroImageUrl || invData.content?.hero?.heroImage || invData.heroImage;
+      const brideImgUrl = invData.content?.couple?.bride?.photoUrl || invData.content?.couple?.bride?.image;
+      const groomImgUrl = invData.content?.couple?.groom?.photoUrl || invData.content?.couple?.groom?.image;
+      const galleryUrls = (invData.content?.gallery?.images || invData.galleryImages || []).map((g) => g.url);
+
+      if (heroImgUrl) {
+        if (heroImgUrl.startsWith('idb://') || heroImgUrl.startsWith('indexeddb://')) {
+          prefetchMediaIds([heroImgUrl])
+            .then(() => prefetchMediaIds([brideImgUrl, groomImgUrl, ...galleryUrls]))
+            .catch(() => {});
+        } else {
+          const prefetchImg = new Image();
+          prefetchImg.src = getOptimizedImageUrl(heroImgUrl, { width: 1080, quality: 75 });
+          prefetchMediaIds([brideImgUrl, groomImgUrl, ...galleryUrls]).catch(() => {});
+        }
+      } else {
+        prefetchMediaIds([brideImgUrl, groomImgUrl, ...galleryUrls]).catch(() => {});
+      }
 
       // 2. Fetch personalized guest by slug
       // If slug is empty, general ('tamu'/'guest'), or not found in database,
@@ -184,19 +218,25 @@ export const GuestInvitationPage: React.FC<GuestInvitationPageProps> = ({
     const easeInOutQuart = (t: number) =>
       t < 0.5 ? 8 * t * t * t * t : 1 - Math.pow(-2 * t + 2, 4) / 2;
 
-    const onUserInterrupt = (e: TouchEvent | WheelEvent) => {
-      // Only cancel if user intentionally drags with a substantial touch gesture
+    const onUserInterrupt = () => {
       animationActive = false;
       cleanup();
     };
 
+    let rafId = 0;
     const cleanup = () => {
+      animationActive = false;
+      clearTimeout(interruptTimer);
+      if (rafId) cancelAnimationFrame(rafId);
       window.removeEventListener('wheel', onUserInterrupt);
       window.removeEventListener('touchmove', onUserInterrupt);
     };
 
+    scrollCleanupRef.current?.();
+    scrollCleanupRef.current = cleanup;
+
     // Small delay before listening to interrupt prevents the click event from killing the animation
-    setTimeout(() => {
+    const interruptTimer = setTimeout(() => {
       if (animationActive) {
         window.addEventListener('wheel', onUserInterrupt, { passive: true });
         window.addEventListener('touchmove', onUserInterrupt, { passive: true });
@@ -214,26 +254,29 @@ export const GuestInvitationPage: React.FC<GuestInvitationPageProps> = ({
       setScrollTop(currentY);
 
       if (progress < 1) {
-        requestAnimationFrame(step);
+        rafId = requestAnimationFrame(step);
       } else {
         cleanup();
         setScrollTop(targetY);
       }
     };
 
-    requestAnimationFrame(step);
+    rafId = requestAnimationFrame(step);
   };
 
   const handleOpenInvitation = () => {
-    // 1. Immediately release all overflow and touch-action constraints
+    // 1. Unlock & start background audio synchronously inside the user tap/click event
+    musicPlayerRef.current?.unlockAndPlay();
+
+    // 2. Immediately release all overflow and touch-action constraints
     document.body.style.overflow = '';
     document.documentElement.style.overflow = '';
     document.body.style.touchAction = '';
 
-    // 2. Mark opened state
+    // 3. Mark opened state
     setIsOpened(true);
 
-    // 3. Kick off the silky smooth scroll
+    // 4. Kick off the silky smooth scroll
     requestAnimationFrame(() => {
       if (mainContentRef.current) {
         smoothScrollToTarget(mainContentRef.current);
@@ -260,16 +303,18 @@ export const GuestInvitationPage: React.FC<GuestInvitationPageProps> = ({
   // 404 / Error State when slug is not found
   if ((isNotFound || !invitation) && !previewMode) {
     return (
-      <NotFoundView
-        searchedSlug={slug}
-        onBackToHome={() => {
-          if (onNavigateHome) {
-            onNavigateHome();
-          } else {
-            window.location.href = '/';
-          }
-        }}
-      />
+      <Suspense fallback={<div className="min-h-screen bg-[#FAF8F5]" />}>
+        <NotFoundView
+          searchedSlug={slug}
+          onBackToHome={() => {
+            if (onNavigateHome) {
+              onNavigateHome();
+            } else {
+              window.location.href = '/';
+            }
+          }}
+        />
+      </Suspense>
     );
   }
 
@@ -304,8 +349,11 @@ export const GuestInvitationPage: React.FC<GuestInvitationPageProps> = ({
       {/* Background Ambient Music Player */}
       {!previewMode && (
         <MusicPlayer
+          ref={musicPlayerRef}
           musicUrl={invitation.music?.url || invitation.musicUrl}
           autoPlayTrigger={isOpened}
+          autoPlayEnabled={invitation.music?.autoPlay !== false}
+          loopEnabled={invitation.music?.loop !== false}
         />
       )}
 
@@ -347,16 +395,33 @@ export const GuestInvitationPage: React.FC<GuestInvitationPageProps> = ({
                     layout={section}
                   />
                 );
-              case 'countdown':
+              case 'countdown': {
+                const heroEventDate =
+                  invitation.content?.hero?.eventDateText ||
+                  invitation.content?.hero?.eventDate ||
+                  invitation.eventDate;
+                const heroEventTime =
+                  invitation.content?.hero?.eventTimeText ||
+                  invitation.content?.event?.akad?.timeFormatted ||
+                  invitation.content?.event?.akad?.time ||
+                  invitation.eventTime;
+                const countdownTargetISO =
+                  invitation.content?.hero?.eventDateISO ||
+                  invitation.content?.countdown?.targetDateISO ||
+                  invitation.eventDateISO;
+
                 return (
                   <CountdownSection
                     key="countdown"
-                    targetDateISO={invitation.content?.countdown.targetDateISO || invitation.eventDateISO}
-                    title={invitation.content?.countdown.title}
-                    subtitle={invitation.content?.countdown.subtitle}
+                    targetDateISO={countdownTargetISO}
+                    eventDateText={heroEventDate}
+                    eventTimeText={heroEventTime}
+                    title={invitation.content?.countdown?.title}
+                    subtitle={invitation.content?.countdown?.subtitle}
                     layout={section}
                   />
                 );
+              }
               case 'event':
                 return <EventDetailsSection key="event" invitation={invitation} layout={section} />;
               case 'story':
@@ -385,6 +450,10 @@ export const GuestInvitationPage: React.FC<GuestInvitationPageProps> = ({
                     key="rsvp"
                     guest={guest}
                     onRsvpSuccess={handleRsvpSuccess}
+                    sectionTitle={invitation.content?.rsvp?.sectionTitle}
+                    sectionSubtitle={invitation.content?.rsvp?.sectionSubtitle}
+                    buttonText={invitation.content?.rsvp?.buttonText}
+                    successMessage={invitation.content?.rsvp?.successMessage}
                     layout={section}
                   />
                 );
@@ -392,7 +461,11 @@ export const GuestInvitationPage: React.FC<GuestInvitationPageProps> = ({
                 return (
                   <WishesSection
                     key="wishes"
-                    defaultGuestName={guest?.name || 'Tamu Undangan'}
+                    defaultGuestName={guest?.name || ''}
+                    sectionTitle={invitation.content?.wishes?.sectionTitle}
+                    sectionSubtitle={invitation.content?.wishes?.sectionSubtitle}
+                    emptyStateText={invitation.content?.wishes?.emptyStateText}
+                    buttonText={invitation.content?.wishes?.buttonText}
                     layout={section}
                   />
                 );

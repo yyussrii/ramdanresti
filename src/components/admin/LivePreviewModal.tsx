@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Smartphone,
   Tablet,
@@ -6,8 +6,6 @@ import {
   X,
   RotateCcw,
   Sparkles,
-  Layers,
-  ChevronRight,
 } from 'lucide-react';
 import { Invitation } from '../../types';
 import { GuestInvitationPage } from '../../pages/GuestInvitationPage';
@@ -24,8 +22,17 @@ export const LivePreviewModal: React.FC<LivePreviewModalProps> = ({
   invitation,
 }) => {
   const [device, setDevice] = useState<'mobile' | 'tablet' | 'desktop'>('mobile');
-  const [showCoverFirst, setShowCoverFirst] = useState(false);
+  const [showCoverFirst] = useState(false);
   const [previewKey, setPreviewKey] = useState(0);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 

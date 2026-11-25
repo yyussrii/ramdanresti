@@ -47,7 +47,9 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
           src={heroImage}
           alt={`${brideName} & ${groomName}`}
           className="w-full h-full object-cover object-center scale-[1.02] transition-transform duration-700"
-          loading="eager"
+          priority={true}
+          optimizeWidth={1080}
+          fallbackSrc="https://images.unsplash.com/photo-1583939003579-730e3918a45a?q=75&w=1080&auto=format&fit=crop"
         />
 
         {/* Top Vignette (frames top) */}
@@ -62,53 +64,53 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
 
       {/* Content Plaque / Card for Maximum Text Contrast */}
       <motion.div
-        initial={{ opacity: 0, y: 36, filter: 'blur(6px)' }}
-        animate={isOpened ? { opacity: 1, y: 0, filter: 'blur(0px)' } : { opacity: 0, y: 36, filter: 'blur(6px)' }}
-        transition={{ duration: 1.6, delay: 0.35, ease: [0.16, 1, 0.3, 1] }}
+        initial={{ opacity: 0, y: 24 }}
+        animate={isOpened ? { opacity: 1, y: 0 } : { opacity: 0, y: 24 }}
+        transition={{ duration: 1.0, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
         className={`relative z-10 max-w-xl mx-auto w-full flex flex-col ${textAlign}`}
       >
-        <div className="w-full bg-white/92 sm:bg-white/95 backdrop-blur-md border border-[#E8DFD3] rounded-2xl sm:rounded-3xl p-6 sm:p-9 shadow-[0_16px_45px_rgba(0,0,0,0.12)] flex flex-col items-center text-center">
+        <div className="w-full bg-white/95 border border-[#E8DFD3] rounded-2xl sm:rounded-3xl p-6 sm:p-9 shadow-[0_16px_45px_rgba(0,0,0,0.12)] flex flex-col items-center text-center">
           {/* Badge */}
           <motion.div
-            initial={{ opacity: 0, y: -10, filter: 'blur(3px)' }}
-            animate={isOpened ? { opacity: 1, y: 0, filter: 'blur(0px)' } : { opacity: 0, y: -10, filter: 'blur(3px)' }}
-            transition={{ duration: 1.1, delay: 0.5, ease: [0.16, 1, 0.3, 1] }}
+            initial={{ opacity: 0, y: -8 }}
+            animate={isOpened ? { opacity: 1, y: 0 } : { opacity: 0, y: -8 }}
+            transition={{ duration: 0.8, delay: 0.3, ease: [0.16, 1, 0.3, 1] }}
             className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-[#B89B72]/15 border border-[#B89B72]/35 text-[#82622F] text-[11px] font-semibold tracking-[0.25em] uppercase mb-3.5 shadow-2xs"
           >
             <span>{badge}</span>
           </motion.div>
 
-          {/* Couple Names - Silky Smooth Revealing Entrance */}
+          {/* Couple Names - Silky Smooth GPU-Composited Entrance */}
           <motion.h1
-            initial={{ opacity: 0, y: 16, filter: 'blur(8px)' }}
+            initial={{ opacity: 0, y: 12 }}
             animate={
               isOpened
-                ? { opacity: 1, y: 0, filter: 'blur(0px)' }
-                : { opacity: 0, y: 16, filter: 'blur(8px)' }
+                ? { opacity: 1, y: 0 }
+                : { opacity: 0, y: 12 }
             }
-            transition={{ duration: 1.6, delay: 0.7, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ duration: 1.0, delay: 0.4, ease: [0.16, 1, 0.3, 1] }}
             className="font-serif text-4xl sm:text-5xl md:text-6xl text-[#12100E] leading-tight mb-2 font-medium tracking-normal drop-shadow-2xs"
           >
             <motion.span
-              initial={{ opacity: 0, y: 8, filter: 'blur(4px)' }}
-              animate={isOpened ? { opacity: 1, y: 0, filter: 'blur(0px)' } : { opacity: 0, y: 8, filter: 'blur(4px)' }}
-              transition={{ duration: 1.3, delay: 0.8, ease: [0.16, 1, 0.3, 1] }}
+              initial={{ opacity: 0, y: 6 }}
+              animate={isOpened ? { opacity: 1, y: 0 } : { opacity: 0, y: 6 }}
+              transition={{ duration: 0.85, delay: 0.45, ease: [0.16, 1, 0.3, 1] }}
               className="inline-block"
             >
               {brideName}
             </motion.span>
             <motion.span
-              initial={{ opacity: 0, scale: 0.75, filter: 'blur(4px)' }}
-              animate={isOpened ? { opacity: 1, scale: 1, filter: 'blur(0px)' } : { opacity: 0, scale: 0.75, filter: 'blur(4px)' }}
-              transition={{ duration: 1.2, delay: 0.95, ease: [0.16, 1, 0.3, 1] }}
+              initial={{ opacity: 0, scale: 0.85 }}
+              animate={isOpened ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.85 }}
+              transition={{ duration: 0.85, delay: 0.55, ease: [0.16, 1, 0.3, 1] }}
               className="font-serif italic font-light mx-2 sm:mx-3 text-[#A68353] inline-block"
             >
               &amp;
             </motion.span>
             <motion.span
-              initial={{ opacity: 0, y: 8, filter: 'blur(4px)' }}
-              animate={isOpened ? { opacity: 1, y: 0, filter: 'blur(0px)' } : { opacity: 0, y: 8, filter: 'blur(4px)' }}
-              transition={{ duration: 1.3, delay: 1.1, ease: [0.16, 1, 0.3, 1] }}
+              initial={{ opacity: 0, y: 6 }}
+              animate={isOpened ? { opacity: 1, y: 0 } : { opacity: 0, y: 6 }}
+              transition={{ duration: 0.85, delay: 0.65, ease: [0.16, 1, 0.3, 1] }}
               className="inline-block"
             >
               {groomName}
@@ -117,9 +119,9 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
 
           {/* Subheading / Event Type Tag */}
           <motion.p
-            initial={{ opacity: 0, y: 8, filter: 'blur(3px)' }}
-            animate={isOpened ? { opacity: 1, y: 0, filter: 'blur(0px)' } : { opacity: 0, y: 8, filter: 'blur(3px)' }}
-            transition={{ duration: 1.1, delay: 1.25, ease: [0.16, 1, 0.3, 1] }}
+            initial={{ opacity: 0, y: 6 }}
+            animate={isOpened ? { opacity: 1, y: 0 } : { opacity: 0, y: 6 }}
+            transition={{ duration: 0.8, delay: 0.75, ease: [0.16, 1, 0.3, 1] }}
             className="text-xs sm:text-[13px] text-[#635B53] font-light tracking-[0.2em] uppercase mt-1"
           >
             The Wedding Celebration
@@ -129,7 +131,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
           <motion.div
             initial={{ opacity: 0, scaleX: 0 }}
             animate={isOpened ? { opacity: 1, scaleX: 1 } : { opacity: 0, scaleX: 0 }}
-            transition={{ duration: 1.1, delay: 1.35, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ duration: 0.8, delay: 0.85, ease: [0.16, 1, 0.3, 1] }}
             className="flex items-center justify-center gap-2 my-4 w-full max-w-[220px]"
           >
             <div className="h-[1px] flex-1 bg-gradient-to-r from-transparent via-[#C9B9A6] to-transparent" />
@@ -139,9 +141,9 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
 
           {/* Event Schedule & Location Badges */}
           <motion.div
-            initial={{ opacity: 0, y: 12, filter: 'blur(3px)' }}
-            animate={isOpened ? { opacity: 1, y: 0, filter: 'blur(0px)' } : { opacity: 0, y: 12, filter: 'blur(3px)' }}
-            transition={{ duration: 1.1, delay: 1.45, ease: [0.16, 1, 0.3, 1] }}
+            initial={{ opacity: 0, y: 8 }}
+            animate={isOpened ? { opacity: 1, y: 0 } : { opacity: 0, y: 8 }}
+            transition={{ duration: 0.8, delay: 0.95, ease: [0.16, 1, 0.3, 1] }}
             className="flex flex-wrap items-center justify-center gap-2 sm:gap-3 text-xs sm:text-[13px] text-[#1E1C1A] font-medium"
           >
             <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-[#FAF8F5] border border-[#E8DFD3] shadow-2xs">

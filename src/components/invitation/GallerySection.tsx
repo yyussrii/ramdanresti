@@ -68,6 +68,7 @@ export const GallerySection: React.FC<GallerySectionProps> = ({
                   src={item.url}
                   alt={item.caption || `Foto Momen ${index + 1}`}
                   loading="lazy"
+                  optimizeWidth={700}
                   className="w-full h-full object-cover object-center transition-transform duration-700 ease-out group-hover:scale-105"
                 />
 
@@ -118,6 +119,8 @@ export const GallerySection: React.FC<GallerySectionProps> = ({
               <SmartImage
                 src={selectedImage.url}
                 alt={selectedImage.caption || 'Foto Galeri'}
+                priority={true}
+                optimizeWidth={1200}
                 className="max-h-[75vh] w-auto object-contain rounded-lg shadow-2xl"
               />
               {selectedImage.caption && selectedImage.caption.trim() !== '' && (

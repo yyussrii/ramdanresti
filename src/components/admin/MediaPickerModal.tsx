@@ -9,15 +9,16 @@ import {
   Loader2,
   HardDrive,
   FolderOpen,
+  AlertCircle,
 } from 'lucide-react';
 import {
   MediaItem,
   getAllMediaItems,
   saveMediaFile,
   deleteMediaItem,
-  formatBytes,
 } from '../../services/mediaStorageService';
 import { SmartImage } from '../common/SmartImage';
+import { getOptimizedImageUrl } from '../../utils/imageOptimizer';
 
 interface MediaPickerModalProps {
   isOpen: boolean;
@@ -42,6 +43,8 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [errorNotice, setErrorNotice] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Curated stock photos for inspiration
@@ -99,12 +102,13 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
   if (!isOpen) return null;
 
   const handleFileUpload = async (files: FileList | File[]) => {
+    setErrorNotice(null);
     const validFiles = Array.from(files).filter((file) =>
       file.type.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(file.name)
     );
 
     if (validFiles.length === 0) {
-      alert('Harap unggah file foto dengan format JPG, PNG, atau WEBP.');
+      setErrorNotice('Harap unggah file foto dengan format JPG, PNG, atau WEBP.');
       return;
     }
 
@@ -125,17 +129,23 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
       }
     } catch (err) {
       console.error('Upload failed:', err);
-      alert('Gagal mengunggah foto ke database. Silakan coba kembali.');
+      setErrorNotice('Gagal mengunggah foto ke database. Silakan coba kembali.');
     } finally {
       setIsUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
   const handleDeleteItem = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (confirm('Hapus foto ini dari basis data database browser?')) {
+    try {
       await deleteMediaItem(id);
+      setConfirmDeleteId(null);
       await loadMedia();
+    } catch {
+      setErrorNotice('Gagal menghapus foto dari database.');
     }
   };
 
@@ -156,7 +166,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
             <div>
               <h3 className="font-serif text-lg text-[#1F1D1B] font-medium">{title}</h3>
               <p className="text-[11px] text-[#8C827A]">
-                Penyimpanan foto aman di database browser (IndexedDB) &bull; {mediaList.length} Foto Tersimpan
+                Penyimpanan Cloud Database &amp; cache lokal &bull; {mediaList.length} Foto Tersimpan
               </p>
             </div>
           </div>
@@ -209,6 +219,24 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
 
         {/* Modal Content */}
         <div className="flex-1 overflow-y-auto p-6 bg-[#FAF8F5]/40">
+          {errorNotice && (
+            <div
+              role="alert"
+              className="mb-4 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-center justify-between gap-2"
+            >
+              <span className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                {errorNotice}
+              </span>
+              <button
+                type="button"
+                onClick={() => setErrorNotice(null)}
+                className="text-red-600 hover:text-red-800 font-semibold cursor-pointer"
+              >
+                Tutup
+              </button>
+            </div>
+          )}
           {/* TAB 1: MY MEDIA */}
           {activeTab === 'my-media' && (
             <div className="space-y-4">
@@ -284,19 +312,52 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                               <Check className="w-3.5 h-3.5" />
                             </div>
                           )}
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                            <span className="px-2.5 py-1 bg-white text-[#242220] rounded-lg text-[10px] font-semibold">
-                              Pilih Foto Ini
-                            </span>
-                            <button
-                              type="button"
-                              onClick={(e) => handleDeleteItem(e, item.id)}
-                              title="Hapus dari database"
-                              className="p-1.5 bg-red-600/90 hover:bg-red-600 text-white rounded-lg transition-colors cursor-pointer"
+                          {confirmDeleteId === item.id ? (
+                            <div
+                              onClick={(e) => e.stopPropagation()}
+                              className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center gap-2 p-2 text-center"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
+                              <span className="text-[10px] font-medium text-white">
+                                Hapus foto ini?
+                              </span>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleDeleteItem(e, item.id)}
+                                  className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg text-[10px] font-semibold cursor-pointer"
+                                >
+                                  Ya, Hapus
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setConfirmDeleteId(null);
+                                  }}
+                                  className="px-2.5 py-1 bg-white text-[#242220] rounded-lg text-[10px] font-medium cursor-pointer"
+                                >
+                                  Batal
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                              <span className="px-2.5 py-1 bg-white text-[#242220] rounded-lg text-[10px] font-semibold">
+                                Pilih Foto Ini
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setConfirmDeleteId(item.id);
+                                }}
+                                title="Hapus dari database"
+                                className="p-1.5 bg-red-600/90 hover:bg-red-600 text-white rounded-lg transition-colors cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
                         </div>
                         <div className="p-2 border-t border-[#F0EAE1]">
                           <p className="text-[11px] font-medium text-[#1F1D1B] truncate">{item.name}</p>
@@ -402,8 +463,10 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                   >
                     <div className="aspect-square overflow-hidden bg-[#FAF8F5]">
                       <img
-                        src={photo.url}
+                        src={getOptimizedImageUrl(photo.url, { width: 400, quality: 75 })}
                         alt={photo.name}
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
                     </div>
@@ -425,7 +488,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
         {/* Modal Footer */}
         <div className="px-6 py-3.5 border-t border-[#EFE8DC] bg-[#FAF8F5]/80 flex items-center justify-between text-xs">
           <span className="text-[11px] text-[#8C827A]">
-            💡 Foto yang diunggah disimpan di database lokal dan dapat digunakan di semua bagian website.
+            Foto dioptimasi WebP &amp; disinkronkan ke Cloud Database agar langsung tampil di semua perangkat tamu.
           </span>
           <button
             onClick={onClose}

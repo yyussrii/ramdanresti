@@ -94,6 +94,7 @@ export const CoupleSection: React.FC<CoupleSectionProps> = ({ content, layout })
                 alt={bride.name}
                 className="w-full h-full object-cover"
                 loading="lazy"
+                optimizeWidth={600}
               />
             </div>
             <h3 className="font-serif text-2xl text-[#221F1D] font-medium mb-1">
@@ -141,6 +142,7 @@ export const CoupleSection: React.FC<CoupleSectionProps> = ({ content, layout })
                 alt={groom.name}
                 className="w-full h-full object-cover"
                 loading="lazy"
+                optimizeWidth={600}
               />
             </div>
             <h3 className="font-serif text-2xl text-[#221F1D] font-medium mb-1">

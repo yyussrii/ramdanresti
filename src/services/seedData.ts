@@ -19,7 +19,7 @@ export const INITIAL_INVITATION: Invitation = {
   brideParents: 'Putri pertama dari Bpk. Ir. Hendra Gunawan & Ibu Maya Savitri',
   eventDate: 'Sabtu, 24 Oktober 2026',
   eventDateISO: '2026-10-24T08:00:00+07:00',
-  eventTime: '08:00 - 14:00 WIB',
+  eventTime: '08:00 - Selesai',
   venue: 'The Glass House Ballroom',
   address: 'Jl. Kemang Raya No. 45, Bangka, Mampang Prapatan, Jakarta Selatan 12730',
   mapsUrl: 'https://maps.google.com/?q=The+Glass+House+Jakarta',
@@ -50,14 +50,14 @@ export const INITIAL_INVITATION: Invitation = {
     title: 'Akad Nikah',
     date: 'Sabtu, 24 Oktober 2026',
     time: '08:00 - 10:00 WIB',
-    venue: 'Masjid Agung Al-Azhar',
-    address: 'Jl. Sisingamangaraja, Selong, Kebayoran Baru, Jakarta Selatan',
-    mapsUrl: 'https://maps.google.com/?q=Masjid+Agung+Al-Azhar+Jakarta'
+    venue: 'The Glass House Ballroom',
+    address: 'Jl. Kemang Raya No. 45, Bangka, Mampang Prapatan, Jakarta Selatan',
+    mapsUrl: 'https://maps.google.com/?q=The+Glass+House+Jakarta'
   },
   resepsi: {
     title: 'Resepsi Pernikahan',
     date: 'Sabtu, 24 Oktober 2026',
-    time: '11:30 - 14:00 WIB',
+    time: '11:30 - Selesai',
     venue: 'The Glass House Ballroom',
     address: 'Jl. Kemang Raya No. 45, Bangka, Mampang Prapatan, Jakarta Selatan',
     mapsUrl: 'https://maps.google.com/?q=The+Glass+House+Jakarta'

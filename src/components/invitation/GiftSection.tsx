@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Gift, Copy, Check } from 'lucide-react';
+import { Copy, Check } from 'lucide-react';
 import { BankAccount, SectionLayoutConfig } from '../../types';
+import { copyToClipboard } from '../../utils/clipboard';
 
 interface GiftSectionProps {
   bankAccounts: BankAccount[];
@@ -11,18 +12,22 @@ interface GiftSectionProps {
 }
 
 export const GiftSection: React.FC<GiftSectionProps> = ({
-  bankAccounts,
+  bankAccounts = [],
   sectionTitle,
   sectionSubtitle,
   layout,
 }) => {
-  const [copiedBank, setCopiedBank] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  const handleCopy = (accountNumber: string, bank: string) => {
-    navigator.clipboard.writeText(accountNumber);
-    setCopiedBank(bank);
-    setTimeout(() => setCopiedBank(null), 2500);
+  const handleCopy = async (accountNumber: string, itemKey: string) => {
+    const ok = await copyToClipboard(accountNumber);
+    if (ok) {
+      setCopiedKey(itemKey);
+      setTimeout(() => setCopiedKey(null), 2500);
+    }
   };
+
+  if (!bankAccounts || bankAccounts.length === 0) return null;
 
   return (
     <section
@@ -50,42 +55,46 @@ export const GiftSection: React.FC<GiftSectionProps> = ({
           </p>
 
           <div className="space-y-4">
-            {bankAccounts.map((acc, index) => (
-              <div
-                key={index}
-                className="bg-white/85 border border-[#E8E1D7] rounded-xl p-5 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4"
-              >
-                <div className="text-center sm:text-left">
-                  <span className="text-[10px] uppercase tracking-widest text-[#B89B72] font-semibold block mb-0.5">
-                    {acc.bank}
-                  </span>
-                  <p className="font-mono text-base text-[#1F1D1B] font-medium tracking-wide">
-                    {acc.accountNumber}
-                  </p>
-                  <p className="text-xs text-[#6B635B] font-light">
-                    a.n. {acc.accountName}
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => handleCopy(acc.accountNumber, acc.bank)}
-                  className="w-full sm:w-auto py-2 px-4 rounded-lg bg-[#F7F3ED] hover:bg-[#EFE8DC] active:scale-95 text-[#242220] text-xs font-medium tracking-wider uppercase transition-all duration-200 flex items-center justify-center gap-1.5 cursor-pointer"
+            {bankAccounts.map((acc, index) => {
+              const itemKey = acc.id || `${acc.bank}-${index}`;
+              const isCopied = copiedKey === itemKey;
+              return (
+                <div
+                  key={itemKey}
+                  className="bg-white/85 border border-[#E8E1D7] rounded-xl p-5 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4"
                 >
-                  {copiedBank === acc.bank ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-[#B89B72]" />
-                      <span>Tersalin!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5 text-[#8C827A]" />
-                      <span>Salin No. Rekening</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            ))}
+                  <div className="text-center sm:text-left">
+                    <span className="text-[10px] uppercase tracking-widest text-[#B89B72] font-semibold block mb-0.5">
+                      {acc.bank}
+                    </span>
+                    <p className="font-mono text-base text-[#1F1D1B] font-medium tracking-wide">
+                      {acc.accountNumber}
+                    </p>
+                    <p className="text-xs text-[#6B635B] font-light">
+                      a.n. {acc.accountHolder || acc.accountName}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(acc.accountNumber, itemKey)}
+                    className="w-full sm:w-auto py-2 px-4 rounded-lg bg-[#F7F3ED] hover:bg-[#EFE8DC] active:scale-95 text-[#242220] text-xs font-medium tracking-wider uppercase transition-all duration-200 flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    {isCopied ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-[#B89B72]" />
+                        <span>Tersalin!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5 text-[#8C827A]" />
+                        <span>Salin No. Rekening</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </motion.div>
       </div>

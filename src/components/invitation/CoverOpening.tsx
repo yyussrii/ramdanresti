@@ -19,13 +19,17 @@ export const CoverOpening: React.FC<CoverOpeningProps> = ({
   const opening = invitation.content?.opening;
   const groomName = invitation.content?.hero.groomName || invitation.groomName;
   const brideName = invitation.content?.hero.brideName || invitation.brideName;
-  const eventDate = invitation.content?.hero.eventDate || invitation.eventDate;
+  const eventDate =
+    invitation.content?.hero.eventDateText ||
+    invitation.content?.hero.eventDate ||
+    invitation.eventDate;
 
-  const label = opening?.label || 'The Wedding Celebration';
+  const label = opening?.weddingLabel || opening?.label || 'The Wedding Celebration';
   const greeting = opening?.greeting || 'Kepada Yth. Bapak/Ibu/Saudara/i:';
   const defaultGuestName = opening?.defaultGuestName || 'Tamu Undangan';
   const subheading = opening?.subheading || 'Tanpa mengurangi rasa hormat, kami bermaksud mengundang Anda untuk hadir dalam perayaan pernikahan kami.';
-  const buttonText = opening?.buttonText || 'Buka Undangan';
+  const buttonText = opening?.openButtonText || opening?.buttonText || 'Buka Undangan';
+  const invitationNote = opening?.invitationNote?.trim();
 
   return (
     <section
@@ -60,9 +64,9 @@ export const CoverOpening: React.FC<CoverOpeningProps> = ({
       >
         {/* Couple Names - Silky Smooth Reveal */}
         <motion.h1
-          initial={{ opacity: 0, y: 18, filter: 'blur(8px)' }}
-          animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-          transition={{ duration: 1.4, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
+          initial={{ opacity: 0, y: 14 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.9, delay: 0.15, ease: [0.16, 1, 0.3, 1] }}
           className="font-serif text-4xl sm:text-5xl md:text-6xl tracking-wide text-[#12100E] font-medium leading-tight"
         >
           <span className="inline-block">{brideName}</span>
@@ -72,9 +76,9 @@ export const CoverOpening: React.FC<CoverOpeningProps> = ({
 
         {/* Date Display */}
         <motion.p
-          initial={{ opacity: 0, y: 8, filter: 'blur(3px)' }}
-          animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-          transition={{ duration: 1.1, delay: 0.4, ease: [0.16, 1, 0.3, 1] }}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8, delay: 0.28, ease: [0.16, 1, 0.3, 1] }}
           className="text-xs uppercase tracking-[0.25em] text-[#4A433C] mt-3 mb-5 font-medium"
         >
           {eventDate}
@@ -88,9 +92,9 @@ export const CoverOpening: React.FC<CoverOpeningProps> = ({
 
           {/* Guest Name with Gentle Smooth Reveal */}
           <motion.div
-            initial={{ opacity: 0, y: 12, filter: 'blur(6px)' }}
-            animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-            transition={{ duration: 1.3, delay: 0.55, ease: [0.16, 1, 0.3, 1] }}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.85, delay: 0.38, ease: [0.16, 1, 0.3, 1] }}
             className="my-1.5 py-0.5 px-3"
           >
             <h2 className="font-serif text-2xl sm:text-3xl text-[#12100E] font-semibold tracking-normal capitalize">
@@ -108,6 +112,12 @@ export const CoverOpening: React.FC<CoverOpeningProps> = ({
           <p className="text-xs text-[#524A42] font-normal leading-relaxed text-center mt-1 max-w-xs">
             {subheading}
           </p>
+
+          {invitationNote && (
+            <p className="text-[10px] text-[#8C827A] italic text-center mt-2.5 pt-2.5 border-t border-[#EFE8DC]/80 max-w-xs leading-relaxed">
+              {invitationNote}
+            </p>
+          )}
         </div>
       </motion.div>
 

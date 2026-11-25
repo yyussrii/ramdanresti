@@ -18,7 +18,6 @@ import {
   getCustomAudioMetadata,
   deleteCustomAudio,
   resolveAudioUrl,
-  formatBytes,
   DEFAULT_AUDIO_KEY,
   AudioMetadata,
 } from '../../services/audioStorageService';
@@ -38,6 +37,7 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [storedMeta, setStoredMeta] = useState<AudioMetadata | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -278,10 +278,6 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
 
   // Delete stored custom audio
   const handleDeleteCustomAudio = async () => {
-    if (!window.confirm('Hapus file musik kustom ini dari penyimpanan peramban?')) {
-      return;
-    }
-
     try {
       if (isPlayingPreview) {
         audioRef.current?.pause();
@@ -290,6 +286,7 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
       await deleteCustomAudio(DEFAULT_AUDIO_KEY);
       setStoredMeta(null);
       setUploadSuccess(null);
+      setConfirmingDelete(false);
 
       // Revert to first curated track if current music was the custom upload
       if (music.isCustomUpload || music.url.includes(DEFAULT_AUDIO_KEY)) {
@@ -450,6 +447,15 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
             />
           </label>
         </div>
+
+        {isCurrentCustom && (
+          <div className="p-3 rounded-xl bg-amber-50/80 border border-amber-200/80 text-[11px] text-amber-900 flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <span>
+              File MP3 kustom tersimpan di browser ini. Tamu yang membuka undangan dari HP/perangkat lain akan otomatis memutar instrumen akustik standar kecuali Anda mengisi URL MP3 eksternal (`https://...`) di bagian bawah.
+            </span>
+          </div>
+        )}
       </div>
 
       {/* 2. Upload MP3 Feature Card */}
@@ -558,14 +564,33 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
                 </span>
               )}
 
-              <button
-                type="button"
-                onClick={handleDeleteCustomAudio}
-                title="Hapus file dari penyimpanan"
-                className="p-1.5 text-[#8C827A] hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+              {confirmingDelete ? (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleDeleteCustomAudio}
+                    className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg text-[11px] font-medium cursor-pointer"
+                  >
+                    Yakin Hapus?
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDelete(false)}
+                    className="px-2 py-1 bg-white border border-[#D6C7B2] text-[#70675F] rounded-lg text-[11px] cursor-pointer"
+                  >
+                    Batal
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(true)}
+                  title="Hapus file dari penyimpanan"
+                  className="p-1.5 text-[#8C827A] hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
             </div>
           </div>
         )}

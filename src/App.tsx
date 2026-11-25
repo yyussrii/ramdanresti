@@ -1,6 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { GuestInvitationPage } from './pages/GuestInvitationPage';
-import { AdminDashboard } from './pages/AdminDashboard';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
+
+const AdminDashboard = lazy(() =>
+  import('./pages/AdminDashboard').then((m) => ({ default: m.AdminDashboard }))
+);
 
 export default function App() {
   const [currentRoute, setCurrentRoute] = useState<'invitation' | 'admin'>('invitation');
@@ -73,20 +77,31 @@ export default function App() {
   };
 
   return (
-    <div className="relative min-h-screen">
-      {/* Main View Router */}
-      {currentRoute === 'admin' ? (
-        <AdminDashboard
-          onBackToInvitation={() => navigateToSlug(currentSlug)}
-          onNavigateToSlug={navigateToSlug}
-        />
-      ) : (
-        <GuestInvitationPage
-          slug={currentSlug}
-          onNavigateHome={() => navigateToSlug('tamu')}
-          onOpenAdmin={navigateToAdmin}
-        />
-      )}
-    </div>
+    <ErrorBoundary>
+      <div className="relative min-h-screen">
+        {/* Main View Router */}
+        {currentRoute === 'admin' ? (
+          <Suspense
+            fallback={
+              <div className="min-h-screen bg-[#FAF8F5] flex flex-col items-center justify-center">
+                <div className="w-10 h-10 rounded-full border-2 border-[#D6C7B2] border-t-[#242220] animate-spin mb-3" />
+                <p className="text-xs uppercase tracking-[0.2em] text-[#8C827A]">Memuat Admin Studio...</p>
+              </div>
+            }
+          >
+            <AdminDashboard
+              onBackToInvitation={() => navigateToSlug(currentSlug)}
+              onNavigateToSlug={navigateToSlug}
+            />
+          </Suspense>
+        ) : (
+          <GuestInvitationPage
+            slug={currentSlug}
+            onNavigateHome={() => navigateToSlug('tamu')}
+            onOpenAdmin={navigateToAdmin}
+          />
+        )}
+      </div>
+    </ErrorBoundary>
   );
 }

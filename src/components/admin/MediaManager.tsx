@@ -7,15 +7,13 @@ import {
   HardDrive,
   Check,
   Sparkles,
-  ExternalLink,
   User,
   Heart,
   Eye,
   X,
   Loader2,
-  FolderHeart,
   Layers,
-  ArrowUpRight,
+  AlertCircle,
 } from 'lucide-react';
 import { ContentConfig } from '../../types';
 import {
@@ -23,9 +21,9 @@ import {
   getAllMediaItems,
   saveMediaFile,
   deleteMediaItem,
-  formatBytes,
 } from '../../services/mediaStorageService';
 import { SmartImage } from '../common/SmartImage';
+import { getOptimizedImageUrl } from '../../utils/imageOptimizer';
 
 interface MediaManagerProps {
   content: ContentConfig;
@@ -43,9 +41,8 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
-
-  // Invitation gallery manual add state
-  const [newCaption, setNewCaption] = useState('');
+  const [errorNotice, setErrorNotice] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -105,12 +102,13 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
   };
 
   const handleFileUpload = async (files: FileList | File[]) => {
+    setErrorNotice(null);
     const validFiles = Array.from(files).filter(
       (file) => file.type.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(file.name)
     );
 
     if (validFiles.length === 0) {
-      alert('Harap unggah file gambar berformat JPG, PNG, atau WEBP.');
+      setErrorNotice('Harap unggah file gambar berformat JPG, PNG, atau WEBP.');
       return;
     }
 
@@ -122,20 +120,26 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
         count++;
       }
       await loadMedia();
-      triggerNotice(`${count} foto berhasil diunggah dan disimpan ke database!`);
+      triggerNotice(`${count} foto berhasil diunggah dan disinkronkan ke Cloud Database!`);
     } catch (err) {
       console.error('Error saving media:', err);
-      alert('Gagal menyimpan file ke database. Silakan coba kembali.');
+      setErrorNotice('Gagal menyimpan file ke database. Silakan coba kembali.');
     } finally {
       setIsUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
   const handleDeleteMedia = async (id: string) => {
-    if (confirm('Hapus foto ini secara permanen dari basis data browser?')) {
+    try {
       await deleteMediaItem(id);
+      setConfirmDeleteId(null);
       await loadMedia();
       triggerNotice('Foto berhasil dihapus dari database.');
+    } catch {
+      setErrorNotice('Gagal menghapus foto dari database.');
     }
   };
 
@@ -202,7 +206,7 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
           {
             url,
             caption: caption || 'Momen Bahagia',
-            aspectRatio: 'portrait',
+            aspect: 'portrait',
           },
         ],
       },
@@ -263,6 +267,26 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
         </button>
       </div>
 
+      {/* Inline Error Banner */}
+      {errorNotice && (
+        <div
+          role="alert"
+          className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-center justify-between gap-3"
+        >
+          <span className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            {errorNotice}
+          </span>
+          <button
+            type="button"
+            onClick={() => setErrorNotice(null)}
+            className="text-red-600 hover:text-red-800 font-semibold cursor-pointer"
+          >
+            Tutup
+          </button>
+        </div>
+      )}
+
       {/* Drag & Drop Upload Zone */}
       <div
         onDragOver={(e) => {
@@ -278,10 +302,11 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
           }
         }}
         onClick={() => fileInputRef.current?.click()}
-        className={`rounded-2xl p-8 text-center transition-all cursor-pointer border-2 border-dashed shadow-xs ${isDragging
+        className={`rounded-2xl p-8 text-center transition-all cursor-pointer border-2 border-dashed shadow-xs ${
+          isDragging
             ? 'border-[#C5A059] bg-[#C5A059]/10 scale-[1.008]'
             : 'border-[#E8DFD3] bg-white hover:border-[#C5A059] hover:bg-[#FAF8F5]/50'
-          }`}
+        }`}
       >
         <input
           type="file"
@@ -298,10 +323,10 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
           <div className="py-6 flex flex-col items-center gap-3">
             <Loader2 className="w-8 h-8 animate-spin text-[#C5A059]" />
             <p className="text-xs font-medium text-[#1F1D1B]">
-              Menyimpan foto ke database browser (IndexedDB)...
+              Mengompres ke WebP &amp; menyinkronkan foto ke Cloud Database...
             </p>
             <p className="text-[10px] text-[#8C827A]">
-              Menghasilkan thumbnail resolusi tinggi &amp; menyimpan binary Blob
+              Agar cepat terbuka dan langsung tampil di semua HP &amp; laptop tamu
             </p>
           </div>
         ) : (
@@ -320,7 +345,7 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
             <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#FAF8F5] border border-[#E8DFD3] text-[10px] text-[#70675F]">
                 <HardDrive className="w-3 h-3 text-emerald-600" />
-                <span>Penyimpanan Database Bebas Kuota (Hingga ratusan MB)</span>
+                <span>Otomatis Kompresi WebP + Cloud Sync</span>
               </span>
               <span className="px-3 py-1 rounded-full bg-[#FAF8F5] border border-[#E8DFD3] text-[10px] text-[#70675F]">
                 Format: .JPG, .JPEG, .PNG, .WEBP
@@ -334,10 +359,11 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
       <div className="border-b border-[#EFE8DC] flex gap-6 bg-transparent">
         <button
           onClick={() => setActiveTab('database')}
-          className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${activeTab === 'database'
+          className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+            activeTab === 'database'
               ? 'border-[#C5A059] text-[#242220]'
               : 'border-transparent text-[#8C827A] hover:text-[#242220]'
-            }`}
+          }`}
         >
           <HardDrive className="w-3.5 h-3.5" />
           <span>Foto di Database ({mediaList.length})</span>
@@ -345,10 +371,11 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
 
         <button
           onClick={() => setActiveTab('invitation-gallery')}
-          className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${activeTab === 'invitation-gallery'
+          className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+            activeTab === 'invitation-gallery'
               ? 'border-[#C5A059] text-[#242220]'
               : 'border-transparent text-[#8C827A] hover:text-[#242220]'
-            }`}
+          }`}
         >
           <Layers className="w-3.5 h-3.5" />
           <span>Galeri Undangan Aktif ({content.gallery.images.length})</span>
@@ -356,10 +383,11 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
 
         <button
           onClick={() => setActiveTab('presets')}
-          className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${activeTab === 'presets'
+          className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+            activeTab === 'presets'
               ? 'border-[#C5A059] text-[#242220]'
               : 'border-transparent text-[#8C827A] hover:text-[#242220]'
-            }`}
+          }`}
         >
           <Sparkles className="w-3.5 h-3.5" />
           <span>Koleksi Foto Pilihan</span>
@@ -433,24 +461,48 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                       </div>
 
                       {/* Quick Overlay Action */}
-                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setLightboxImage(item.url)}
-                          className="p-2 rounded-xl bg-white/90 text-[#242220] hover:bg-white text-xs font-medium flex items-center gap-1 shadow-sm cursor-pointer"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                          <span>Perbesar</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteMedia(item.id)}
-                          className="p-2 rounded-xl bg-red-600/90 text-white hover:bg-red-600 text-xs font-medium shadow-sm cursor-pointer"
-                          title="Hapus dari database"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                      {confirmDeleteId === item.id ? (
+                        <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center gap-2 p-3 text-center">
+                          <span className="text-[11px] font-medium text-white">
+                            Hapus foto ini permanen?
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteMedia(item.id)}
+                              className="px-3 py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white text-[11px] font-semibold cursor-pointer"
+                            >
+                              Ya, Hapus
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteId(null)}
+                              className="px-3 py-1 rounded-lg bg-white/90 hover:bg-white text-[#242220] text-[11px] font-medium cursor-pointer"
+                            >
+                              Batal
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setLightboxImage(item.url)}
+                            className="p-2 rounded-xl bg-white/90 text-[#242220] hover:bg-white text-xs font-medium flex items-center gap-1 shadow-sm cursor-pointer"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>Perbesar</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(item.id)}
+                            className="p-2 rounded-xl bg-red-600/90 text-white hover:bg-red-600 text-xs font-medium shadow-sm cursor-pointer"
+                            title="Hapus dari database"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     {/* Metadata */}
@@ -478,10 +530,11 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                         <button
                           type="button"
                           onClick={() => handleSetGroomPhoto(item.url)}
-                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${isGroom
+                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${
+                            isGroom
                               ? 'bg-blue-50 text-blue-700 border-blue-200'
                               : 'bg-white hover:bg-[#FAF8F5] text-[#242220] border-[#E8DFD3]'
-                            }`}
+                          }`}
                         >
                           <User className="w-3 h-3 text-blue-600" />
                           <span>{isGroom ? '✓ Pria Aktif' : 'Mempelai Pria'}</span>
@@ -490,10 +543,11 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                         <button
                           type="button"
                           onClick={() => handleSetBridePhoto(item.url)}
-                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${isBride
+                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${
+                            isBride
                               ? 'bg-rose-50 text-rose-700 border-rose-200'
                               : 'bg-white hover:bg-[#FAF8F5] text-[#242220] border-[#E8DFD3]'
-                            }`}
+                          }`}
                         >
                           <Heart className="w-3 h-3 text-rose-500" />
                           <span>{isBride ? '✓ Wanita Aktif' : 'Mempelai Wanita'}</span>
@@ -502,10 +556,11 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                         <button
                           type="button"
                           onClick={() => handleSetHeroPhoto(item.url)}
-                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${isHero
+                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${
+                            isHero
                               ? 'bg-[#FAF8F5] text-[#C5A059] border-[#C5A059] font-semibold'
                               : 'bg-white hover:bg-[#FAF8F5] text-[#242220] border-[#E8DFD3]'
-                            }`}
+                          }`}
                         >
                           <span>★ {isHero ? 'Cover Aktif' : 'Cover Hero'}</span>
                         </button>
@@ -513,10 +568,11 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                         <button
                           type="button"
                           onClick={() => handleAddToInvitationGallery(item.url, item.name)}
-                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${inGallery
+                          className={`px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer border ${
+                            inGallery
                               ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                               : 'bg-white hover:bg-[#FAF8F5] text-[#242220] border-[#E8DFD3]'
-                            }`}
+                          }`}
                         >
                           <Plus className="w-3 h-3 text-emerald-600" />
                           <span>{inGallery ? 'Ada di Galeri' : '+ Galeri'}</span>
@@ -628,8 +684,10 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
               >
                 <div className="aspect-square relative overflow-hidden bg-[#FAF8F5]">
                   <img
-                    src={photo.url}
+                    src={getOptimizedImageUrl(photo.url, { width: 400, quality: 75 })}
                     alt={photo.title}
+                    loading="lazy"
+                    decoding="async"
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                   />
                   <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center p-2">

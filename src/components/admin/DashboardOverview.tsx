@@ -17,6 +17,7 @@ import {
 import { Guest, Invitation } from '../../types';
 import { AdminTab } from './AdminSidebar';
 import { dbService } from '../../services/dbService';
+import { copyToClipboard } from '../../utils/clipboard';
 
 interface DashboardOverviewProps {
   invitation: Invitation;
@@ -49,22 +50,28 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
   // Statistics calculations
   const totalGuests = guests.length;
-  const openedCount = guests.filter((g) => g.openedAt !== null).length;
+  const openedCount = guests.filter((g) => Boolean(g.openedAt || g.isOpened)).length;
   const openRate = totalGuests > 0 ? Math.round((openedCount / totalGuests) * 100) : 0;
-  const attendingCount = guests.filter((g) => g.rsvpStatus === 'attending').length;
-  const totalPax = guests
-    .filter((g) => g.rsvpStatus === 'attending')
-    .reduce((sum, g) => sum + (g.paxCount || 1), 0);
+  const attendingGuests = guests.filter(
+    (g) => g.rsvpStatus === 'hadir' || g.rsvpStatus === 'attending'
+  );
+  const attendingCount = attendingGuests.length;
+  const totalPax = attendingGuests.reduce(
+    (sum, g) => sum + (g.guestCount || g.paxCount || 1),
+    0
+  );
 
   const sampleGuest = guests[0];
   const sampleUrl = sampleGuest
     ? `${window.location.origin}/inv/${sampleGuest.slug}`
     : window.location.origin;
 
-  const handleCopySample = () => {
-    navigator.clipboard.writeText(sampleUrl);
-    setIsCopied(true);
-    setTimeout(() => setIsCopied(false), 2000);
+  const handleCopySample = async () => {
+    const ok = await copyToClipboard(sampleUrl);
+    if (ok) {
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    }
   };
 
   return (
@@ -194,10 +201,15 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               Undangan Pernikahan Aktif
             </span>
             <h3 className="font-serif text-2xl sm:text-3xl text-[#1F1D1B] font-normal">
-              {invitation.brideName || 'Resti'} &amp; {invitation.groomName || 'Ramdan'}
+              {invitation.content?.hero?.brideName || invitation.brideName || 'Resti'} &amp;{' '}
+              {invitation.content?.hero?.groomName || invitation.groomName || 'Ramdan'}
             </h3>
             <p className="text-xs text-[#70675F] mt-1 font-light">
-              Acara Akad &amp; Resepsi &bull; {invitation.eventDateFormatted || 'Sabtu, 24 Oktober 2026'}
+              Acara Akad &amp; Resepsi &bull;{' '}
+              {invitation.content?.hero?.eventDateText ||
+                invitation.content?.hero?.eventDate ||
+                invitation.eventDate ||
+                'Sabtu, 24 Oktober 2026'}
             </p>
           </div>
           <div className="flex items-center gap-2.5 w-full md:w-auto">

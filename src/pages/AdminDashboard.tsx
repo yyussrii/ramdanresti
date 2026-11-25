@@ -1,33 +1,42 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import {
   Lock,
-  Sparkles,
   ArrowLeft,
   KeyRound,
   CheckCircle2,
   AlertCircle,
-  Eye,
-  Send,
 } from 'lucide-react';
 import {
   Guest,
   Invitation,
-  ContentConfig,
-  SectionLayoutConfig,
-  MusicConfig,
 } from '../types';
 import { dbService } from '../services/dbService';
 import { preloadMediaCache } from '../services/mediaStorageService';
 import { AdminSidebar, AdminTab } from '../components/admin/AdminSidebar';
 import { AdminHeader } from '../components/admin/AdminHeader';
 import { DashboardOverview } from '../components/admin/DashboardOverview';
-import { GuestManager } from '../components/admin/GuestManager';
-import { ContentEditor } from '../components/admin/ContentEditor';
-import { LayoutEditor } from '../components/admin/LayoutEditor';
-import { MediaManager } from '../components/admin/MediaManager';
-import { MusicManager } from '../components/admin/MusicManager';
-import { CommentControl } from '../components/admin/CommentControl';
-import { LivePreviewModal } from '../components/admin/LivePreviewModal';
+
+const GuestManager = React.lazy(() =>
+  import('../components/admin/GuestManager').then((m) => ({ default: m.GuestManager }))
+);
+const ContentEditor = React.lazy(() =>
+  import('../components/admin/ContentEditor').then((m) => ({ default: m.ContentEditor }))
+);
+const LayoutEditor = React.lazy(() =>
+  import('../components/admin/LayoutEditor').then((m) => ({ default: m.LayoutEditor }))
+);
+const MediaManager = React.lazy(() =>
+  import('../components/admin/MediaManager').then((m) => ({ default: m.MediaManager }))
+);
+const MusicManager = React.lazy(() =>
+  import('../components/admin/MusicManager').then((m) => ({ default: m.MusicManager }))
+);
+const CommentControl = React.lazy(() =>
+  import('../components/admin/CommentControl').then((m) => ({ default: m.CommentControl }))
+);
+const LivePreviewModal = React.lazy(() =>
+  import('../components/admin/LivePreviewModal').then((m) => ({ default: m.LivePreviewModal }))
+);
 import {
   DEFAULT_CONTENT_CONFIG,
   DEFAULT_LAYOUT_CONFIG,
@@ -92,7 +101,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setInvitation(invData);
       setGuests(guestData);
       setHasUnpublishedChanges(Boolean(invData.hasUnpublishedChanges));
-      preloadMediaCache().catch(() => { });
+      preloadMediaCache().catch(() => {});
     } catch (err) {
       console.error('Error loading admin data:', err);
       showToast('Gagal memuat data dari database.');
@@ -105,19 +114,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     e.preventDefault();
     const cleanInput = adminPin.trim();
 
-    // The user explicitly specified password "123123"
-    const configuredPass = invitation?.settings?.adminPasscode || '123123';
-    if (
-      cleanInput === '123123' ||
-      cleanInput === configuredPass ||
-      cleanInput === 'admin123' ||
-      cleanInput.toLowerCase() === 'admin'
-    ) {
+    const configuredPass = invitation?.settings?.adminPasscode || invitation?.settings?.adminPin || '123123';
+    if (cleanInput === configuredPass || cleanInput === '123123') {
       setIsAuthenticated(true);
       sessionStorage.setItem('wedding_admin_auth', 'true');
       setAuthError('');
     } else {
-      setAuthError('Kata sandi salah. Gunakan kata sandi: 123123');
+      setAuthError('Kata sandi salah. Silakan periksa kembali dan coba lagi.');
     }
   };
 
@@ -151,6 +154,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     } catch (err) {
       console.error('Error saving:', err);
       setLastSavedText('Gagal menyimpan perubahan');
+      showToast('Gagal menyimpan perubahan ke database.');
+      throw err;
     } finally {
       setIsSaving(false);
     }
@@ -174,11 +179,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const handleOpenLiveSite = () => {
     const firstGuest = guests[0];
-    const targetUrl = firstGuest ? `/inv/${firstGuest.slug}` : '/';
-    if (onNavigateToSlug && firstGuest) {
-      onNavigateToSlug(firstGuest.slug);
-    } else {
-      window.open(targetUrl, '_blank');
+    if (onNavigateToSlug) {
+      onNavigateToSlug(firstGuest?.slug || 'tamu');
+    } else if (onBackToInvitation) {
+      onBackToInvitation();
     }
   };
 
@@ -246,7 +250,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           <div className="mt-6 pt-5 border-t border-[#34302C]">
             <p className="text-[11px] text-[#70675F] font-light">
-              Kata Sandi Default: <span className="font-mono text-[#A69C92] font-semibold">123123</span>
+              Akses terbatas hanya untuk pengelola undangan.
             </p>
           </div>
         </div>
@@ -343,64 +347,84 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             />
           )}
 
-          {currentTab === 'tamu' && (
-            <GuestManager
-              guests={guests}
-              onRefresh={loadInitialData}
-              onNavigateToSlug={onNavigateToSlug}
-            />
-          )}
+          <Suspense
+            fallback={
+              <div className="py-20 flex flex-col items-center justify-center gap-3 text-[#8C827A]">
+                <div className="w-8 h-8 rounded-full border-2 border-[#D6C7B2] border-t-[#242220] animate-spin" />
+                <span className="text-xs">Memuat panel editor...</span>
+              </div>
+            }
+          >
+            {currentTab === 'tamu' && (
+              <GuestManager
+                guests={guests}
+                invitation={invitation}
+                onRefresh={loadInitialData}
+                onNavigateToSlug={onNavigateToSlug}
+              />
+            )}
 
-          {currentTab === 'konten' && (
-            <ContentEditor
-              content={currentContent}
-              isSaving={isSaving}
-              onSave={async (updatedContent) => {
-                await handleUpdateDraftConfig({ content: updatedContent });
-                showToast('Perubahan konten berhasil disimpan!');
-              }}
-            />
-          )}
+            {currentTab === 'konten' && (
+              <ContentEditor
+                content={currentContent}
+                isSaving={isSaving}
+                onSave={async (updatedContent) => {
+                  await handleUpdateDraftConfig({ content: updatedContent });
+                  showToast('Perubahan konten berhasil disimpan!');
+                }}
+              />
+            )}
 
-          {currentTab === 'layout' && (
-            <LayoutEditor
-              layout={currentLayout}
-              onChange={(updatedLayout) => handleUpdateDraftConfig({ layout: updatedLayout })}
-            />
-          )}
+            {currentTab === 'layout' && (
+              <LayoutEditor
+                layout={currentLayout}
+                onChange={(updatedLayout) => {
+                  handleUpdateDraftConfig({ layout: updatedLayout }).catch(() => {});
+                }}
+              />
+            )}
 
-          {currentTab === 'media' && (
-            <MediaManager
-              content={currentContent}
-              onChangeContent={(updatedContent) =>
-                handleUpdateDraftConfig({ content: updatedContent })
-              }
-            />
-          )}
+            {currentTab === 'media' && (
+              <MediaManager
+                content={currentContent}
+                onChangeContent={(updatedContent) => {
+                  handleUpdateDraftConfig({ content: updatedContent }).catch(() => {});
+                }}
+              />
+            )}
 
-          {currentTab === 'musik' && (
-            <MusicManager
-              music={currentMusic}
-              onChange={(updatedMusic) => handleUpdateDraftConfig({ music: updatedMusic })}
-            />
-          )}
+            {currentTab === 'musik' && (
+              <MusicManager
+                music={currentMusic}
+                onChange={(updatedMusic) => {
+                  handleUpdateDraftConfig({ music: updatedMusic }).catch(() => {});
+                }}
+              />
+            )}
 
-          {currentTab === 'komentar' && (
-            <CommentControl
-              invitation={invitation}
-              onUpdateDraftConfig={handleUpdateDraftConfig}
-              showToast={showToast}
-            />
-          )}
+            {currentTab === 'komentar' && (
+              <CommentControl
+                invitation={invitation}
+                onUpdateDraftConfig={(updates) => {
+                  handleUpdateDraftConfig(updates).catch(() => {});
+                }}
+                showToast={showToast}
+              />
+            )}
+          </Suspense>
         </main>
       </div>
 
       {/* 3. Live Preview Modal with Device Switcher */}
-      <LivePreviewModal
-        isOpen={isPreviewModalOpen}
-        onClose={() => setIsPreviewModalOpen(false)}
-        invitation={invitation}
-      />
+      {isPreviewModalOpen && (
+        <Suspense fallback={null}>
+          <LivePreviewModal
+            isOpen={isPreviewModalOpen}
+            onClose={() => setIsPreviewModalOpen(false)}
+            invitation={invitation}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };

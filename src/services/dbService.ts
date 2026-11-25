@@ -8,18 +8,48 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  deleteField,
   addDoc,
-  serverTimestamp,
   orderBy
 } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../config/firebase';
 import { Invitation, Guest, GuestCategory, GuestWish, RSVPStatus } from '../types';
 import { INITIAL_INVITATION, INITIAL_GUESTS, INITIAL_WISHES } from './seedData';
 import { generateSlug, generateUniqueSlug } from '../utils/slugGenerator';
+import { parseIndonesianDateToISO } from '../utils/dateParser';
 
 const LOCAL_STORAGE_INVITATION_KEY = 'wedding_invitation_data_v1';
 const LOCAL_STORAGE_GUESTS_KEY = 'wedding_guests_data_v1';
 const LOCAL_STORAGE_WISHES_KEY = 'wedding_wishes_data_v1';
+
+// In-flight request deduplication maps
+const inFlightInvitationRequests = new Map<string, Promise<Invitation>>();
+const inFlightWishesRequests = new Map<string, Promise<GuestWish[]>>();
+
+/**
+ * Recursively strips `undefined` properties so Firestore never throws
+ * "Unsupported field value: undefined". Preserves null, arrays, and FieldValue sentinels.
+ */
+function stripUndefined<T>(value: T): T {
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => stripUndefined(item)) as unknown as T;
+  }
+  // Preserve non-plain objects such as Firestore FieldValue or Date
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== null && proto !== Object.prototype) {
+    return value;
+  }
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (v !== undefined) {
+      result[k] = stripUndefined(v);
+    }
+  }
+  return result as T;
+}
 
 // Local storage helpers for instantaneous fallback
 function getLocalGuests(): Guest[] {
@@ -196,52 +226,64 @@ export const dbService = {
     invitationId: string = INITIAL_INVITATION.id,
     version: 'draft' | 'published' = 'published'
   ): Promise<Invitation> {
-    let inv: Invitation;
+    const cacheKey = `${invitationId}:${version}`;
+    const existing = inFlightInvitationRequests.get(cacheKey);
+    if (existing) return existing;
 
-    if (isFirebaseConfigured && db) {
-      try {
-        const invDoc = await getDoc(doc(db, 'invitations', invitationId));
-        if (invDoc.exists()) {
-          inv = { id: invDoc.id, ...invDoc.data() } as Invitation;
-          saveLocalInvitation(inv);
-        } else {
-          inv = getLocalInvitation();
-          try {
-            await setDoc(doc(db, 'invitations', invitationId), inv);
-            console.info('[Firestore] Master invitation saved to cloud database');
-          } catch (seedErr) {
-            console.warn('[Firestore] Initial master invitation upload note:', seedErr);
+    const promise = (async (): Promise<Invitation> => {
+      let inv: Invitation;
+
+      if (isFirebaseConfigured && db) {
+        try {
+          const invDoc = await getDoc(doc(db, 'invitations', invitationId));
+          if (invDoc.exists()) {
+            inv = { id: invDoc.id, ...invDoc.data() } as Invitation;
+            saveLocalInvitation(inv);
+          } else {
+            inv = getLocalInvitation();
+            try {
+              await setDoc(doc(db, 'invitations', invitationId), stripUndefined(inv));
+            } catch (seedErr) {
+              console.warn('[Firestore] Initial master invitation upload note:', seedErr);
+            }
           }
+        } catch (err) {
+          console.warn('[Firestore] Falling back to local data for invitation:', err);
+          inv = getLocalInvitation();
         }
-      } catch (err) {
-        console.warn('[Firestore] Falling back to local data for invitation:', err);
+      } else {
         inv = getLocalInvitation();
       }
-    } else {
-      inv = getLocalInvitation();
+
+      // Ensure CMS fields exist by filling defaults if missing
+      if (!inv.theme) inv.theme = INITIAL_INVITATION.theme;
+      if (!inv.content) inv.content = INITIAL_INVITATION.content;
+      if (!inv.layout) inv.layout = INITIAL_INVITATION.layout;
+      if (!inv.music) inv.music = INITIAL_INVITATION.music;
+      if (!inv.settings) inv.settings = INITIAL_INVITATION.settings;
+      if (!inv.versionHistory) inv.versionHistory = INITIAL_INVITATION.versionHistory;
+
+      // If published mode is requested and publishedVersion exists, overlay published fields
+      if (version === 'published' && inv.publishedVersion) {
+        return {
+          ...inv,
+          theme: inv.publishedVersion.theme || inv.theme,
+          content: inv.publishedVersion.content || inv.content,
+          layout: inv.publishedVersion.layout || inv.layout,
+          music: inv.publishedVersion.music || inv.music,
+          settings: inv.publishedVersion.settings || inv.settings,
+        };
+      }
+
+      return inv;
+    })();
+
+    inFlightInvitationRequests.set(cacheKey, promise);
+    try {
+      return await promise;
+    } finally {
+      inFlightInvitationRequests.delete(cacheKey);
     }
-
-    // Ensure CMS fields exist by filling defaults if missing
-    if (!inv.theme) inv.theme = INITIAL_INVITATION.theme;
-    if (!inv.content) inv.content = INITIAL_INVITATION.content;
-    if (!inv.layout) inv.layout = INITIAL_INVITATION.layout;
-    if (!inv.music) inv.music = INITIAL_INVITATION.music;
-    if (!inv.settings) inv.settings = INITIAL_INVITATION.settings;
-    if (!inv.versionHistory) inv.versionHistory = INITIAL_INVITATION.versionHistory;
-
-    // If published mode is requested and publishedVersion exists, overlay published fields
-    if (version === 'published' && inv.publishedVersion) {
-      return {
-        ...inv,
-        theme: inv.publishedVersion.theme || inv.theme,
-        content: inv.publishedVersion.content || inv.content,
-        layout: inv.publishedVersion.layout || inv.layout,
-        music: inv.publishedVersion.music || inv.music,
-        settings: inv.publishedVersion.settings || inv.settings,
-      };
-    }
-
-    return inv;
   },
 
   /**
@@ -278,8 +320,25 @@ export const dbService = {
           updated.brideParents = updates.content.couple.bride.parents;
         }
       }
-      updated.eventDate = updates.content.hero.eventDate;
-      updated.eventDateISO = updates.content.hero.eventDateISO;
+      const heroDateStr = updates.content.hero.eventDateText || updates.content.hero.eventDate;
+      if (heroDateStr) {
+        updated.eventDate = heroDateStr;
+        const autoISO = parseIndonesianDateToISO(heroDateStr, updates.content.hero.eventTimeText);
+        if (autoISO) {
+          updated.eventDateISO = autoISO;
+          if (updated.content?.hero) {
+            updated.content.hero.eventDateISO = autoISO;
+          }
+          if (updated.content?.countdown) {
+            updated.content.countdown.targetDateISO = autoISO;
+          }
+        } else if (updates.content.hero.eventDateISO) {
+          updated.eventDateISO = updates.content.hero.eventDateISO;
+        }
+      } else {
+        updated.eventDate = updates.content.hero.eventDate;
+        updated.eventDateISO = updates.content.hero.eventDateISO;
+      }
       updated.venue = updates.content.hero.venue;
       updated.heroImage = updates.content.hero.heroImage;
       updated.akad = updates.content.event.akad;
@@ -310,17 +369,18 @@ export const dbService = {
     };
     updated.lastPublishedAt = new Date().toISOString();
 
+    const sanitized = stripUndefined(updated);
     if (isFirebaseConfigured && db) {
       try {
         const invDocRef = doc(db, 'invitations', invitationId);
-        await setDoc(invDocRef, updated, { merge: true });
+        await setDoc(invDocRef, sanitized, { merge: true });
       } catch (err) {
         console.warn('[Firestore] Error saving draft, falling back locally:', err);
       }
     }
 
-    saveLocalInvitation(updated);
-    return updated;
+    saveLocalInvitation(sanitized);
+    return sanitized;
   },
 
   /**
@@ -356,7 +416,7 @@ export const dbService = {
       publishedAt: now,
     };
 
-    const updatedHistory = [newSnapshot, ...(current.versionHistory || [])];
+    const updatedHistory = [newSnapshot, ...(current.versionHistory || [])].slice(0, 5);
 
     const updated: Invitation = {
       ...current,
@@ -365,17 +425,18 @@ export const dbService = {
       versionHistory: updatedHistory,
     };
 
+    const sanitized = stripUndefined(updated);
     if (isFirebaseConfigured && db) {
       try {
         const invDocRef = doc(db, 'invitations', invitationId);
-        await setDoc(invDocRef, updated, { merge: true });
+        await setDoc(invDocRef, sanitized, { merge: true });
       } catch (err) {
         console.warn('[Firestore] Error publishing, falling back locally:', err);
       }
     }
 
-    saveLocalInvitation(updated);
-    return updated;
+    saveLocalInvitation(sanitized);
+    return sanitized;
   },
 
   /**
@@ -499,17 +560,21 @@ export const dbService = {
     rsvpNotes?: string,
     invitationId: string = INITIAL_INVITATION.id
   ): Promise<boolean> {
+    const now = new Date().toISOString();
+    const safeNotes = (rsvpNotes || '').trim().slice(0, 500);
+    const safeCount = Math.max(1, Math.min(20, Number(guestCount) || 1));
+
     if (isFirebaseConfigured && db) {
       try {
         const guestDocRef = doc(db, 'invitations', invitationId, 'guests', guestId);
         await updateDoc(guestDocRef, {
           rsvpStatus: status,
-          guestCount,
-          rsvpNotes: rsvpNotes || '',
+          guestCount: safeCount,
+          rsvpNotes: safeNotes,
           isOpened: true,
-          openedAt: new Date().toISOString()
+          openedAt: now,
+          updatedAt: now,
         });
-        return true;
       } catch (err) {
         console.warn('[Firestore] Falling back to local RSVP submission:', err);
       }
@@ -521,47 +586,161 @@ export const dbService = {
       localGuests[index] = {
         ...localGuests[index],
         rsvpStatus: status,
-        guestCount,
-        rsvpNotes,
+        guestCount: safeCount,
+        rsvpNotes: safeNotes,
         isOpened: true,
-        openedAt: localGuests[index].openedAt || new Date().toISOString()
+        openedAt: localGuests[index].openedAt || now,
+        updatedAt: now,
       };
       saveLocalGuests(localGuests);
-      return true;
     }
-    return false;
+    return true;
+  },
+
+  /**
+   * Submit RSVP for general / unlisted guests (visitors on `/` or `/inv/tamu` without a pre-created guest record)
+   */
+  async submitPublicRSVP(
+    guestName: string,
+    status: RSVPStatus,
+    guestCount: number,
+    rsvpNotes?: string,
+    invitationId: string = INITIAL_INVITATION.id
+  ): Promise<Guest> {
+    const cleanName = guestName.trim().slice(0, 100);
+    const safeNotes = (rsvpNotes || '').trim().slice(0, 500);
+    const safeCount = Math.max(1, Math.min(20, Number(guestCount) || 1));
+    const baseSlug = generateSlug(cleanName) || `tamu-${Date.now()}`;
+    const now = new Date().toISOString();
+
+    if (isFirebaseConfigured && db) {
+      try {
+        const guestsRef = collection(db, 'invitations', invitationId, 'guests');
+        const q = query(guestsRef, where('slug', '==', baseSlug));
+        const existingSnap = await getDocs(q);
+
+        if (!existingSnap.empty) {
+          const docSnap = existingSnap.docs[0];
+          const existingData = docSnap.data() as Omit<Guest, 'id'>;
+          await updateDoc(docSnap.ref, {
+            name: cleanName,
+            rsvpStatus: status,
+            guestCount: safeCount,
+            rsvpNotes: safeNotes,
+            isOpened: true,
+            openedAt: existingData.openedAt || now,
+            updatedAt: now,
+          });
+          return {
+            id: docSnap.id,
+            ...existingData,
+            name: cleanName,
+            rsvpStatus: status,
+            guestCount: safeCount,
+            rsvpNotes: safeNotes,
+            isOpened: true,
+            openedAt: existingData.openedAt || now,
+            updatedAt: now,
+          };
+        }
+
+        const newGuestData: Omit<Guest, 'id'> = {
+          name: cleanName,
+          slug: baseSlug,
+          phone: '',
+          isOpened: true,
+          openedAt: now,
+          rsvpStatus: status,
+          guestCount: safeCount,
+          rsvpNotes: safeNotes,
+          createdAt: now,
+          updatedAt: now,
+        };
+        const docRef = await addDoc(guestsRef, stripUndefined(newGuestData));
+        const created: Guest = { id: docRef.id, ...newGuestData };
+        saveLocalGuests([created, ...getLocalGuests()]);
+        return created;
+      } catch (err) {
+        console.warn('[Firestore] Falling back to local public RSVP:', err);
+      }
+    }
+
+    const localGuests = getLocalGuests();
+    const existingIdx = localGuests.findIndex((g) => g.slug === baseSlug);
+    if (existingIdx !== -1) {
+      const updated: Guest = {
+        ...localGuests[existingIdx],
+        name: cleanName,
+        rsvpStatus: status,
+        guestCount: safeCount,
+        rsvpNotes: safeNotes,
+        isOpened: true,
+        openedAt: localGuests[existingIdx].openedAt || now,
+        updatedAt: now,
+      };
+      localGuests[existingIdx] = updated;
+      saveLocalGuests(localGuests);
+      return updated;
+    }
+
+    const created: Guest = {
+      id: `guest-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      name: cleanName,
+      slug: baseSlug,
+      phone: '',
+      isOpened: true,
+      openedAt: now,
+      rsvpStatus: status,
+      guestCount: safeCount,
+      rsvpNotes: safeNotes,
+      createdAt: now,
+      updatedAt: now,
+    };
+    saveLocalGuests([created, ...localGuests]);
+    return created;
   },
 
   /**
    * Fetch all guest prayers & wishes
    */
   async getWishes(invitationId: string = INITIAL_INVITATION.id): Promise<GuestWish[]> {
-    if (isFirebaseConfigured && db) {
-      try {
-        const wishesRef = collection(db, 'invitations', invitationId, 'wishes');
-        const q = query(wishesRef, orderBy('createdAt', 'desc'));
-        const querySnapshot = await getDocs(q);
-        const list: GuestWish[] = [];
-        querySnapshot.forEach(docSnap => {
-          list.push({ id: docSnap.id, ...(docSnap.data() as Omit<GuestWish, 'id'>) });
-        });
-        if (list.length > 0) {
-          saveLocalWishes(list);
-          return list;
-        } else {
-          // Cloud database has no wishes yet. Seed initial wishes to cloud!
-          const localWishes = getLocalWishes();
-          for (const w of localWishes) {
-            const { id, ...data } = w;
-            await setDoc(doc(db, 'invitations', invitationId, 'wishes', id), data);
+    const existing = inFlightWishesRequests.get(invitationId);
+    if (existing) return existing;
+
+    const promise = (async (): Promise<GuestWish[]> => {
+      if (isFirebaseConfigured && db) {
+        try {
+          const wishesRef = collection(db, 'invitations', invitationId, 'wishes');
+          const q = query(wishesRef, orderBy('createdAt', 'desc'));
+          const querySnapshot = await getDocs(q);
+          const list: GuestWish[] = [];
+          querySnapshot.forEach(docSnap => {
+            list.push({ id: docSnap.id, ...(docSnap.data() as Omit<GuestWish, 'id'>) });
+          });
+          if (list.length > 0) {
+            saveLocalWishes(list);
+            return list;
+          } else {
+            const localWishes = getLocalWishes();
+            for (const w of localWishes) {
+              const { id, ...data } = w;
+              await setDoc(doc(db, 'invitations', invitationId, 'wishes', id), stripUndefined(data));
+            }
+            return localWishes;
           }
-          return localWishes;
+        } catch (err) {
+          console.warn('[Firestore] Reading wishes locally:', err);
         }
-      } catch (err) {
-        console.warn('[Firestore] Reading wishes locally:', err);
       }
+      return getLocalWishes();
+    })();
+
+    inFlightWishesRequests.set(invitationId, promise);
+    try {
+      return await promise;
+    } finally {
+      inFlightWishesRequests.delete(invitationId);
     }
-    return getLocalWishes();
   },
 
   /**
@@ -573,12 +752,15 @@ export const dbService = {
     attendance?: 'hadir' | 'tidak_hadir' | 'ragu',
     invitationId: string = INITIAL_INVITATION.id
   ): Promise<GuestWish> {
-    const newWish: Omit<GuestWish, 'id'> = {
-      guestName: guestName.trim(),
-      message: message.trim(),
-      attendance,
+    const safeName = guestName.trim().slice(0, 100);
+    const safeMessage = message.trim().slice(0, 1400);
+
+    const newWish: Omit<GuestWish, 'id'> = stripUndefined({
+      guestName: safeName,
+      message: safeMessage,
+      ...(attendance ? { attendance } : {}),
       createdAt: new Date().toISOString()
-    };
+    });
 
     if (isFirebaseConfigured && db) {
       try {
@@ -777,15 +959,28 @@ export const dbService = {
     updates: Partial<Guest>,
     invitationId: string = INITIAL_INVITATION.id
   ): Promise<boolean> {
-    const cleanUpdates = { ...updates };
-    if (!cleanUpdates.category || cleanUpdates.category.trim() === '') {
-      delete cleanUpdates.category;
+    const firestoreUpdates: Record<string, any> = {};
+    const localUpdates: Record<string, any> = {};
+
+    for (const [key, value] of Object.entries(updates)) {
+      if (key === 'category') {
+        if (typeof value === 'string' && value.trim() !== '') {
+          firestoreUpdates.category = value.trim();
+          localUpdates.category = value.trim();
+        } else {
+          firestoreUpdates.category = deleteField();
+          localUpdates.category = undefined;
+        }
+      } else if (value !== undefined) {
+        firestoreUpdates[key] = value;
+        localUpdates[key] = value;
+      }
     }
 
     if (isFirebaseConfigured && db) {
       try {
         const guestDocRef = doc(db, 'invitations', invitationId, 'guests', guestId);
-        await updateDoc(guestDocRef, cleanUpdates);
+        await updateDoc(guestDocRef, firestoreUpdates);
       } catch (err) {
         console.warn('[Firestore] Updating guest locally:', err);
       }
@@ -794,7 +989,10 @@ export const dbService = {
     const localGuests = getLocalGuests();
     const idx = localGuests.findIndex(g => g.id === guestId);
     if (idx !== -1) {
-      const updated = { ...localGuests[idx], ...cleanUpdates };
+      const updated = { ...localGuests[idx], ...localUpdates };
+      if (!localUpdates.category) {
+        delete updated.category;
+      }
       localGuests[idx] = updated;
       saveLocalGuests(localGuests);
       return true;

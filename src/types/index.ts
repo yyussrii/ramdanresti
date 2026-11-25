@@ -136,6 +136,13 @@ export interface CountdownContent {
 export interface EventContent {
   sectionTitle: string;
   sectionSubtitle: string;
+  cardTitle?: string;
+  date?: string;
+  dateFormatted?: string;
+  venue?: string;
+  venueName?: string;
+  address?: string;
+  mapsUrl?: string;
   akad: EventSchedule;
   resepsi: EventSchedule;
 }

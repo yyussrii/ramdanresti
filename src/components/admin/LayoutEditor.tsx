@@ -1,13 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
-  Layers,
   Eye,
   EyeOff,
   ArrowUp,
   ArrowDown,
-  Sparkles,
   RotateCcw,
-  Check,
 } from 'lucide-react';
 import { SectionLayoutConfig } from '../../types';
 import { DEFAULT_LAYOUT_CONFIG } from '../../constants/cmsDefaults';
@@ -18,6 +15,7 @@ interface LayoutEditorProps {
 }
 
 export const LayoutEditor: React.FC<LayoutEditorProps> = ({ layout, onChange }) => {
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const handleToggleEnabled = (index: number) => {
     const updated = [...layout];
     updated[index] = {
@@ -58,9 +56,8 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({ layout, onChange }) 
   };
 
   const handleResetLayout = () => {
-    if (window.confirm('Kembalikan urutan dan tata letak section ke standar?')) {
-      onChange(DEFAULT_LAYOUT_CONFIG);
-    }
+    onChange(DEFAULT_LAYOUT_CONFIG);
+    setConfirmingReset(false);
   };
 
   return (
@@ -74,14 +71,34 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({ layout, onChange }) 
             Sembunyikan atau tampilkan bagian tertentu dan atur urutan kemunculan dari atas ke bawah.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={handleResetLayout}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#D6C7B2] hover:bg-white text-xs text-[#70675F] transition-colors cursor-pointer"
-        >
-          <RotateCcw className="w-3.5 h-3.5 text-[#8C827A]" />
-          <span>Reset Urutan Default</span>
-        </button>
+        {confirmingReset ? (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleResetLayout}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-xs font-medium text-white transition-colors cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Yakin Reset Default?</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmingReset(false)}
+              className="px-3 py-2 rounded-xl border border-[#D6C7B2] hover:bg-white text-xs text-[#70675F] transition-colors cursor-pointer"
+            >
+              Batal
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmingReset(true)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#D6C7B2] hover:bg-white text-xs text-[#70675F] transition-colors cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-[#8C827A]" />
+            <span>Reset Urutan Default</span>
+          </button>
+        )}
       </div>
 
       <div className="bg-white rounded-2xl p-5 border border-[#EFE8DC] shadow-xs space-y-3">

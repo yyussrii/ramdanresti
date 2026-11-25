@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
-import { getFirestore, Firestore } from 'firebase/firestore';
+import { getFirestore, Firestore, doc, getDocFromServer } from 'firebase/firestore';
 import { getAuth, Auth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -22,18 +22,19 @@ if (isFirebaseConfigured) {
       ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
       : getFirestore(app);
     auth = getAuth(app);
-    console.info(
-      '[Firebase] Successfully initialized with project:',
-      firebaseConfig.projectId,
-      'database:',
-      firebaseConfig.firestoreDatabaseId || '(default)'
-    );
   } catch (error) {
     console.warn('[Firebase] Initialization error, using persistent local fallback:', error);
   }
-} else {
-  console.info('[Firebase] Environment variables not set. Running in seamless persistent local store mode.');
+}
+
+export async function testFirestoreConnection(): Promise<boolean> {
+  if (!db) return false;
+  try {
+    await getDocFromServer(doc(db, 'invitations', 'wedding-resti-ramdan-2026'));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export { app, db, auth };
-

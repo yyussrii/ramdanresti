@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { MessageSquare, Send } from 'lucide-react';
+import { Send, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { GuestWish, SectionLayoutConfig } from '../../types';
 import { dbService } from '../../services/dbService';
 
@@ -9,6 +9,8 @@ interface WishesSectionProps {
   defaultGuestName?: string;
   sectionTitle?: string;
   sectionSubtitle?: string;
+  emptyStateText?: string;
+  buttonText?: string;
   layout?: SectionLayoutConfig;
 }
 
@@ -16,12 +18,16 @@ export const WishesSection: React.FC<WishesSectionProps> = ({
   defaultGuestName,
   sectionTitle = 'Doa & Ucapan',
   sectionSubtitle = 'Ungkapan doa dan harapan terbaik dari para sahabat dan keluarga tercinta.',
+  emptyStateText = 'Belum ada ucapan. Jadilah yang pertama memberikan doa restu.',
+  buttonText = 'Kirim Ucapan',
   layout,
 }) => {
+  const initialName = defaultGuestName && defaultGuestName !== 'Tamu Undangan' ? defaultGuestName : '';
   const [wishes, setWishes] = useState<GuestWish[]>([]);
-  const [guestName, setGuestName] = useState(defaultGuestName || '');
+  const [guestName, setGuestName] = useState(initialName);
   const [message, setMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [feedback, setFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
   const paddingClass =
     layout?.paddingY === 'compact'
@@ -29,6 +35,12 @@ export const WishesSection: React.FC<WishesSectionProps> = ({
       : layout?.paddingY === 'spacious'
       ? 'py-28'
       : 'py-20';
+
+  useEffect(() => {
+    if (defaultGuestName && defaultGuestName !== 'Tamu Undangan') {
+      setGuestName(defaultGuestName);
+    }
+  }, [defaultGuestName]);
 
   useEffect(() => {
     loadWishes();
@@ -45,6 +57,7 @@ export const WishesSection: React.FC<WishesSectionProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setFeedback(null);
     if (!guestName.trim() || !message.trim()) return;
 
     setIsSending(true);
@@ -52,8 +65,11 @@ export const WishesSection: React.FC<WishesSectionProps> = ({
       const created = await dbService.addWish(guestName, message, 'hadir');
       setWishes(prev => [created, ...prev]);
       setMessage('');
+      setFeedback({ type: 'success', text: 'Terima kasih, ucapan & doa Anda telah terkirim.' });
+      setTimeout(() => setFeedback(null), 3500);
     } catch (err) {
       console.error('Failed to send wish:', err);
+      setFeedback({ type: 'error', text: 'Gagal mengirim ucapan. Silakan coba lagi.' });
     } finally {
       setIsSending(false);
     }
@@ -83,12 +99,30 @@ export const WishesSection: React.FC<WishesSectionProps> = ({
         {/* Input Card */}
         <div className="bg-white/85 border border-[#E8E1D7] rounded-xl p-6 mb-8 shadow-xs">
           <form onSubmit={handleSubmit} className="space-y-4">
+            {feedback && (
+              <div
+                className={`p-2.5 rounded-lg text-xs flex items-center gap-2 border ${
+                  feedback.type === 'error'
+                    ? 'bg-red-50 border-red-200 text-red-700'
+                    : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                }`}
+              >
+                {feedback.type === 'error' ? (
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                ) : (
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                )}
+                <span>{feedback.text}</span>
+              </div>
+            )}
+
             <div>
               <input
                 type="text"
-                placeholder="Nama Anda"
+                placeholder="Nama Lengkap Anda"
                 value={guestName}
                 onChange={e => setGuestName(e.target.value)}
+                maxLength={100}
                 required
                 className="w-full bg-[#FAF8F5]/70 border border-[#E4DCCE] rounded-lg px-3.5 py-2.5 text-xs text-[#242220] placeholder-[#A0968C] focus:border-[#242220] outline-hidden transition-colors"
               />
@@ -98,6 +132,7 @@ export const WishesSection: React.FC<WishesSectionProps> = ({
                 placeholder="Tuliskan ucapan dan doa tulus Anda..."
                 value={message}
                 onChange={e => setMessage(e.target.value)}
+                maxLength={1000}
                 required
                 rows={3}
                 className="w-full bg-[#FAF8F5]/70 border border-[#E4DCCE] rounded-lg p-3 text-xs text-[#242220] placeholder-[#A0968C] focus:border-[#242220] outline-hidden transition-colors"
@@ -109,7 +144,7 @@ export const WishesSection: React.FC<WishesSectionProps> = ({
               className="w-full py-2.5 px-4 rounded-lg bg-[#242220] hover:bg-[#383431] text-white text-xs uppercase tracking-[0.18em] font-medium transition-all duration-200 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
               <Send className="w-3.5 h-3.5 text-[#D8C6AE]" />
-              <span>{isSending ? 'Mengirim...' : 'Kirim Ucapan'}</span>
+              <span>{isSending ? 'Mengirim...' : buttonText}</span>
             </button>
           </form>
         </div>
@@ -118,7 +153,7 @@ export const WishesSection: React.FC<WishesSectionProps> = ({
         <div className="space-y-3.5 max-h-[480px] overflow-y-auto pr-1">
           {wishes.length === 0 ? (
             <p className="text-center text-xs text-[#8C827A] py-8 font-light">
-              Belum ada ucapan. Jadilah yang pertama memberikan doa restu.
+              {emptyStateText}
             </p>
           ) : (
             wishes.map((w) => (
