@@ -474,42 +474,69 @@ export const DEFAULT_LAYOUT_CONFIG: SectionLayoutConfig[] = [
 ];
 
 // ============================================================================
-// DEFAULT MUSIC CONFIG
+// DEFAULT MUSIC CONFIG (Vercel Static Hosting: public/music/ramdan-resti/)
 // ============================================================================
+export const STATIC_MUSIC_FOLDER = '/music/ramdan-resti';
+
 export const DEFAULT_MUSIC_CONFIG: MusicConfig = {
-  url: 'https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3',
-  title: 'Serene View - Romantic Piano & Strings',
-  artist: 'Mixkit Audio',
+  url: '/music/ramdan-resti/wedding-serenade.mp3',
+  title: 'Wedding Serenade',
+  artist: 'Musik Latar Undangan',
   autoPlay: true,
+  loop: true,
 };
 
+export function resolveStaticMusicUrl(configuredUrl?: string): string {
+  const trimmed = (configuredUrl || '').trim();
+  if (!trimmed) {
+    return DEFAULT_MUSIC_CONFIG.url;
+  }
+
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.startsWith('idb://') ||
+    lower.startsWith('indexeddb://') ||
+    lower.startsWith('blob:') ||
+    lower.includes('firebasestorage.googleapis.com') ||
+    lower.includes('.firebasestorage.app')
+  ) {
+    return DEFAULT_MUSIC_CONFIG.url;
+  }
+
+  if (trimmed.startsWith('/') || /^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+
+  return `${STATIC_MUSIC_FOLDER}/${trimmed.replace(/^\/+/, '')}`;
+}
+
 // ============================================================================
-// CURATED MUSIC PRESETS
+// AVAILABLE STATIC MUSIC TRACKS (public/music/ramdan-resti/)
 // ============================================================================
 export const MUSIC_PRESETS: Array<{ id: string; title: string; artist: string; url: string }> = [
   {
     id: 'music-1',
-    title: 'Serene View - Piano & Strings',
-    artist: 'Mixkit Audio',
-    url: 'https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3',
+    title: 'Wedding Serenade',
+    artist: 'Musik Latar Undangan',
+    url: '/music/ramdan-resti/wedding-serenade.mp3',
   },
   {
     id: 'music-2',
-    title: 'Gentle Wedding Melodies',
-    artist: 'Classical Ambient Ensemble',
-    url: 'https://assets.mixkit.co/music/preview/mixkit-valley-sunset-127.mp3',
+    title: 'Romantic Piano & Strings',
+    artist: 'Instrumen Piano & Biola',
+    url: '/music/ramdan-resti/romantic-piano.mp3',
   },
   {
     id: 'music-3',
-    title: 'Warm Acoustic Harmony',
-    artist: 'Acoustic Soul Trio',
-    url: 'https://assets.mixkit.co/music/preview/mixkit-silent-walk-piano-melody-458.mp3',
+    title: 'Gentle Wedding Walk',
+    artist: 'Akustik Romantis',
+    url: '/music/ramdan-resti/gentle-walk.mp3',
   },
   {
     id: 'music-4',
-    title: 'Ethereal Romance Orchestra',
-    artist: 'Vienna String Quintet',
-    url: 'https://assets.mixkit.co/music/preview/mixkit-sweet-love-story-piano-solo-463.mp3',
+    title: 'A Thousand Moments',
+    artist: 'Gitar Akustik Lembut',
+    url: '/music/ramdan-resti/thousand-moments.mp3',
   },
 ];
 

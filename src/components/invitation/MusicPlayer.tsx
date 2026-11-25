@@ -3,16 +3,12 @@ import React, {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from 'react';
-import { Volume2, VolumeX } from 'lucide-react';
-import { resolveAudioUrl } from '../../services/audioStorageService';
-
-const FALLBACK_AUDIO_URLS = [
-  'https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3',
-  'https://assets.mixkit.co/music/preview/mixkit-valley-sunset-127.mp3',
-];
+import { AlertCircle, Loader2, Play, RotateCw, Volume2, VolumeX } from 'lucide-react';
+import { resolveStaticMusicUrl } from '../../constants/cmsDefaults';
 
 export interface MusicPlayerHandle {
   unlockAndPlay: () => void;
@@ -25,91 +21,101 @@ interface MusicPlayerProps {
   loopEnabled?: boolean;
 }
 
-function getInitialSyncAudioUrl(musicUrl: string): string {
-  const trimmed = (musicUrl || '').trim();
-  if (!trimmed) return FALLBACK_AUDIO_URLS[0];
-  if (trimmed.startsWith('idb://') || trimmed.startsWith('indexeddb://')) {
-    return '';
-  }
-  return trimmed;
-}
-
 export const MusicPlayer = forwardRef<MusicPlayerHandle, MusicPlayerProps>(
   ({ musicUrl, autoPlayTrigger = false, autoPlayEnabled = true, loopEnabled = true }, ref) => {
-    const [isPlaying, setIsPlaying] = useState(false);
-    const [resolvedSrc, setResolvedSrc] = useState<string>(() => getInitialSyncAudioUrl(musicUrl));
-    const [fallbackIndex, setFallbackIndex] = useState<number>(0);
+    const resolvedSrc = useMemo(() => resolveStaticMusicUrl(musicUrl), [musicUrl]);
+
+    const [isBuffering, setIsBuffering] = useState<boolean>(false);
+    const [isPlaying, setIsPlaying] = useState<boolean>(false);
+    const [autoplayBlocked, setAutoplayBlocked] = useState<boolean>(false);
+    const [audioError, setAudioError] = useState<string | null>(null);
 
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const hasStartedRef = useRef<boolean>(false);
     const userPausedRef = useRef<boolean>(false);
+    const isAttemptingPlayRef = useRef<boolean>(false);
     const wasPlayingBeforeHideRef = useRef<boolean>(false);
 
-    // Resolve URL synchronously for HTTP/HTTPS/data URLs, and asynchronously only for idb://
+    // Reset playback tracking cleanly when track URL changes
     useEffect(() => {
-      let isMounted = true;
-      setFallbackIndex(0);
+      hasStartedRef.current = false;
+      setIsPlaying(false);
+      setIsBuffering(false);
+      setAutoplayBlocked(false);
+      setAudioError(null);
+    }, [resolvedSrc]);
 
-      const syncUrl = getInitialSyncAudioUrl(musicUrl);
-      if (syncUrl) {
-        setResolvedSrc(syncUrl);
-        return () => {
-          isMounted = false;
-        };
-      }
-
-      const targetUrl = musicUrl || FALLBACK_AUDIO_URLS[0];
-      resolveAudioUrl(targetUrl)
-        .then((url) => {
-          if (isMounted) {
-            setResolvedSrc(url || FALLBACK_AUDIO_URLS[0]);
-          }
-        })
-        .catch(() => {
-          if (isMounted) {
-            setResolvedSrc(FALLBACK_AUDIO_URLS[0]);
-          }
-        });
-
+    // Ensure single audio instance & clean release on unmount
+    useEffect(() => {
+      const audio = audioRef.current;
       return () => {
-        isMounted = false;
+        if (audio) {
+          audio.pause();
+          audio.removeAttribute('src');
+          audio.load();
+        }
       };
-    }, [musicUrl]);
+    }, []);
 
-    // Synchronously start or resume playback within user gesture stack when called directly
+    // Core play execution: single audio element, prevents overlapping play() calls
     const attemptPlay = useCallback(
       (fromUserGesture = false) => {
         const audio = audioRef.current;
         if (!audio || !resolvedSrc) return;
+
         if (!fromUserGesture && userPausedRef.current) return;
+        if (!audio.paused) {
+          hasStartedRef.current = true;
+          setIsPlaying(true);
+          setAutoplayBlocked(false);
+          return;
+        }
+        if (isAttemptingPlayRef.current && !fromUserGesture) return;
 
         try {
+          isAttemptingPlayRef.current = true;
           audio.muted = false;
-          if (audio.readyState === 0) {
-            audio.load();
-          }
+          setAudioError(null);
+
           const playPromise = audio.play();
           if (playPromise !== undefined) {
             playPromise
               .then(() => {
+                isAttemptingPlayRef.current = false;
                 hasStartedRef.current = true;
                 setIsPlaying(true);
+                setIsBuffering(false);
+                setAutoplayBlocked(false);
               })
-              .catch(() => {
-                // Mobile Safari / Android WebView blocked async play; keep gesture listeners armed
+              .catch((err: unknown) => {
+                isAttemptingPlayRef.current = false;
+                const name = (err as { name?: string })?.name || '';
                 setIsPlaying(false);
+                setIsBuffering(false);
+
+                if (name === 'AbortError') {
+                  return;
+                }
+
+                // Autoplay blocked by browser policy (iOS Safari, Firefox, mobile WebView, etc.)
+                setAutoplayBlocked(true);
               });
           } else {
+            isAttemptingPlayRef.current = false;
             hasStartedRef.current = true;
             setIsPlaying(true);
+            setAutoplayBlocked(false);
           }
         } catch {
+          isAttemptingPlayRef.current = false;
           setIsPlaying(false);
+          setAutoplayBlocked(true);
         }
       },
       [resolvedSrc]
     );
 
+    // Triggered synchronously when visitor clicks "Buka Undangan"
     useImperativeHandle(
       ref,
       () => ({
@@ -122,17 +128,16 @@ export const MusicPlayer = forwardRef<MusicPlayerHandle, MusicPlayerProps>(
       [autoPlayEnabled, attemptPlay]
     );
 
-    // Attempt autoplay automatically when invitation opens or audio source finishes resolving
+    // Autoplay attempt when invitation opens (e.g. direct/initial opened states)
     useEffect(() => {
       if (autoPlayEnabled && autoPlayTrigger && resolvedSrc && !userPausedRef.current && !hasStartedRef.current) {
         attemptPlay(false);
       }
     }, [autoPlayEnabled, autoPlayTrigger, resolvedSrc, attemptPlay]);
 
-    // Persistent gesture unlock fallback for strict iOS Safari / Android Chrome / WhatsApp WebViews:
-    // Unlike `{ once: true }`, stays active only until playback actually succeeds or user manually pauses.
+    // Fallback user-gesture unlock when browser blocks initial autoplay
     useEffect(() => {
-      if (!autoPlayEnabled || !autoPlayTrigger || !resolvedSrc || isPlaying || userPausedRef.current) {
+      if (!autoPlayEnabled || !autoPlayTrigger || !resolvedSrc || isPlaying || userPausedRef.current || audioError) {
         return;
       }
 
@@ -145,17 +150,15 @@ export const MusicPlayer = forwardRef<MusicPlayerHandle, MusicPlayerProps>(
       window.addEventListener('pointerdown', handleGestureUnlock, { passive: true });
       window.addEventListener('touchend', handleGestureUnlock, { passive: true });
       window.addEventListener('click', handleGestureUnlock, { passive: true });
-      window.addEventListener('keydown', handleGestureUnlock, { passive: true });
 
       return () => {
         window.removeEventListener('pointerdown', handleGestureUnlock);
         window.removeEventListener('touchend', handleGestureUnlock);
         window.removeEventListener('click', handleGestureUnlock);
-        window.removeEventListener('keydown', handleGestureUnlock);
       };
-    }, [autoPlayEnabled, autoPlayTrigger, resolvedSrc, isPlaying, attemptPlay]);
+    }, [autoPlayEnabled, autoPlayTrigger, resolvedSrc, isPlaying, audioError, attemptPlay]);
 
-    // Battery & CPU optimization: pause when backgrounded/tab switched, resume when returning
+    // Pause when tab/app is backgrounded, resume when returning
     useEffect(() => {
       const handleVisibilityChange = () => {
         const audio = audioRef.current;
@@ -178,17 +181,22 @@ export const MusicPlayer = forwardRef<MusicPlayerHandle, MusicPlayerProps>(
       };
     }, [attemptPlay]);
 
-    const handleAudioError = () => {
-      if (fallbackIndex < FALLBACK_AUDIO_URLS.length) {
-        const nextFallback = FALLBACK_AUDIO_URLS[fallbackIndex];
-        setFallbackIndex((prev) => prev + 1);
-        if (nextFallback && nextFallback !== resolvedSrc) {
-          setResolvedSrc(nextFallback);
-        }
-      }
+    const handleRetry = () => {
+      const audio = audioRef.current;
+      if (!audio || !resolvedSrc) return;
+      userPausedRef.current = false;
+      setAudioError(null);
+      setIsBuffering(true);
+      audio.load();
+      attemptPlay(true);
     };
 
     const togglePlay = () => {
+      if (audioError) {
+        handleRetry();
+        return;
+      }
+
       const audio = audioRef.current;
       if (!audio) return;
 
@@ -197,43 +205,142 @@ export const MusicPlayer = forwardRef<MusicPlayerHandle, MusicPlayerProps>(
         wasPlayingBeforeHideRef.current = false;
         audio.pause();
         setIsPlaying(false);
+        setAutoplayBlocked(false);
       } else {
         userPausedRef.current = false;
         attemptPlay(true);
       }
     };
 
+    const showManualPlayPill =
+      autoPlayTrigger &&
+      !isPlaying &&
+      !isBuffering &&
+      !userPausedRef.current &&
+      (autoplayBlocked || !hasStartedRef.current) &&
+      !audioError &&
+      Boolean(resolvedSrc);
+
+    const showErrorPill = autoPlayTrigger && Boolean(audioError);
+
     return (
       <>
         <audio
           ref={audioRef}
-          src={resolvedSrc || undefined}
+          src={resolvedSrc}
           loop={loopEnabled}
           preload="metadata"
           playsInline
+          onLoadStart={() => {
+            if (resolvedSrc && autoPlayTrigger) setIsBuffering(true);
+          }}
+          onLoadedData={() => {
+            setIsBuffering(false);
+            setAudioError(null);
+          }}
+          onCanPlay={() => {
+            setIsBuffering(false);
+            setAudioError(null);
+          }}
+          onCanPlayThrough={() => {
+            setIsBuffering(false);
+            setAudioError(null);
+          }}
+          onWaiting={() => {
+            if (autoPlayTrigger && !userPausedRef.current) setIsBuffering(true);
+          }}
+          onPlaying={() => {
+            hasStartedRef.current = true;
+            setIsPlaying(true);
+            setIsBuffering(false);
+            setAutoplayBlocked(false);
+            setAudioError(null);
+          }}
           onPlay={() => {
             hasStartedRef.current = true;
             setIsPlaying(true);
+            setAutoplayBlocked(false);
           }}
-          onPause={() => setIsPlaying(false)}
-          onError={handleAudioError}
+          onPause={() => {
+            setIsPlaying(false);
+            setIsBuffering(false);
+          }}
+          onEnded={() => {
+            if (!loopEnabled) {
+              setIsPlaying(false);
+            }
+          }}
+          onError={() => {
+            setIsPlaying(false);
+            setIsBuffering(false);
+            setAudioError('File audio tidak dapat dimuat. Ketuk untuk mencoba lagi.');
+          }}
         />
-        <button
-          id="btn-toggle-music"
-          type="button"
-          onClick={togglePlay}
-          aria-label={isPlaying ? 'Matikan musik' : 'Putar musik'}
-          className="fixed top-5 right-5 z-40 w-10 h-10 rounded-full bg-[#FFFFFF]/90 backdrop-blur-md border border-[#E4DCCE] shadow-md flex items-center justify-center text-[#2A2725] hover:bg-white active:scale-95 transition-all duration-300 cursor-pointer group"
-        >
-          {isPlaying ? (
-            <div className="relative flex items-center justify-center">
-              <Volume2 className="w-4 h-4 text-[#B89B72]" />
-              <span className="absolute -inset-1 rounded-full border border-[#B89B72]/40 animate-ping" />
-            </div>
-          ) : (
-            <VolumeX className="w-4 h-4 text-[#8C827A] group-hover:text-[#2A2725]" />
+
+        <div className="fixed top-5 right-5 z-40 flex items-center gap-2">
+          {/* Manual Play prompt if browser blocked autoplay after "Buka Undangan" */}
+          {showManualPlayPill && (
+            <button
+              type="button"
+              onClick={() => {
+                userPausedRef.current = false;
+                attemptPlay(true);
+              }}
+              className="px-3 py-1.5 rounded-full bg-[#FFFFFF]/95 backdrop-blur-md border border-[#D6C7B2] shadow-md flex items-center gap-1.5 text-[11px] font-medium text-[#242220] hover:bg-white active:scale-95 transition-all cursor-pointer animate-in fade-in"
+            >
+              <Play className="w-3 h-3 text-[#B89B72] fill-[#B89B72]" />
+              <span>Putar Musik</span>
+            </button>
           )}
-        </button>
+
+          {/* Error Retry Pill */}
+          {showErrorPill && (
+            <button
+              type="button"
+              onClick={handleRetry}
+              title={audioError || 'Audio gagal dimuat'}
+              className="px-3 py-1.5 rounded-full bg-[#FFFFFF]/95 backdrop-blur-md border border-amber-300 shadow-md flex items-center gap-1.5 text-[11px] font-medium text-amber-900 hover:bg-white active:scale-95 transition-all cursor-pointer"
+            >
+              <RotateCw className="w-3 h-3 text-amber-700" />
+              <span>Muat Ulang Musik</span>
+            </button>
+          )}
+
+          {/* Main Floating Play / Pause Button */}
+          <button
+            id="btn-toggle-music"
+            type="button"
+            onClick={togglePlay}
+            aria-label={
+              audioError
+                ? 'Muat ulang musik'
+                : isPlaying
+                ? 'Jeda musik'
+                : 'Putar musik'
+            }
+            title={
+              audioError
+                ? audioError
+                : isPlaying
+                ? 'Jeda musik'
+                : 'Putar musik'
+            }
+            className="w-10 h-10 rounded-full bg-[#FFFFFF]/90 backdrop-blur-md border border-[#E4DCCE] shadow-md flex items-center justify-center text-[#2A2725] hover:bg-white active:scale-95 transition-all duration-300 cursor-pointer group"
+          >
+            {isBuffering ? (
+              <Loader2 className="w-4 h-4 text-[#B89B72] animate-spin" />
+            ) : audioError ? (
+              <AlertCircle className="w-4 h-4 text-amber-600" />
+            ) : isPlaying ? (
+              <div className="relative flex items-center justify-center">
+                <Volume2 className="w-4 h-4 text-[#B89B72]" />
+                <span className="absolute -inset-1 rounded-full border border-[#B89B72]/40 animate-ping" />
+              </div>
+            ) : (
+              <VolumeX className="w-4 h-4 text-[#8C827A] group-hover:text-[#2A2725]" />
+            )}
+          </button>
+        </div>
       </>
     );
   }

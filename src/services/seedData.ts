@@ -25,9 +25,9 @@ export const INITIAL_INVITATION: Invitation = {
   mapsUrl: 'https://maps.google.com/?q=The+Glass+House+Jakarta',
   coverImage: 'https://images.unsplash.com/photo-1519741497674-611481863552?q=80&w=1200&auto=format&fit=crop',
   heroImage: 'https://images.unsplash.com/photo-1583939003579-730e3918a45a?q=80&w=1200&auto=format&fit=crop',
-  // Relaxing ambient acoustic wedding track
-  musicUrl: 'https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3',
-  musicTitle: 'Serene View - Piano & Strings',
+  // Static Vercel hosted wedding track (public/music/ramdan-resti/)
+  musicUrl: '/music/ramdan-resti/wedding-serenade.mp3',
+  musicTitle: 'Wedding Serenade',
   storyTitle: 'Untaian Kisah Dua Hati',
   storyMilestones: [
     {

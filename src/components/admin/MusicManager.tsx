@@ -1,26 +1,22 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Music,
   Play,
   Pause,
-  UploadCloud,
-  FileAudio,
-  Trash2,
-  Check,
-  Sparkles,
-  HardDrive,
+  FolderOpen,
   AlertCircle,
   Volume2,
+  Loader2,
+  Check,
+  Sparkles,
 } from 'lucide-react';
 import { MusicConfig } from '../../types';
 import {
-  saveCustomAudio,
-  getCustomAudioMetadata,
-  deleteCustomAudio,
-  resolveAudioUrl,
-  DEFAULT_AUDIO_KEY,
-  AudioMetadata,
-} from '../../services/audioStorageService';
+  DEFAULT_MUSIC_CONFIG,
+  MUSIC_PRESETS,
+  STATIC_MUSIC_FOLDER,
+  resolveStaticMusicUrl,
+} from '../../constants/cmsDefaults';
 
 interface MusicManagerProps {
   music: MusicConfig;
@@ -29,102 +25,74 @@ interface MusicManagerProps {
 
 export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) => {
   const [isPlayingPreview, setIsPlayingPreview] = useState(false);
-  const [resolvedSrc, setResolvedSrc] = useState<string>('');
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
-  const [storedMeta, setStoredMeta] = useState<AudioMetadata | null>(null);
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Curated royalty-free wedding acoustic tracks
-  const curatedTracks = [
-    {
-      title: 'Acoustic Wedding Serenade',
-      artist: 'Acoustic Memories',
-      url: 'https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3',
-    },
-    {
-      title: 'Romantic Piano & Strings',
-      artist: 'Classical Romance',
-      url: 'https://assets.mixkit.co/music/preview/mixkit-beautiful-dream-493.mp3',
-    },
-    {
-      title: 'Gentle Wedding Walk',
-      artist: 'Love & Warmth',
-      url: 'https://assets.mixkit.co/music/preview/mixkit-tender-love-177.mp3',
-    },
-    {
-      title: 'A Thousand Moments',
-      artist: 'Acoustic Guitars',
-      url: 'https://assets.mixkit.co/music/preview/mixkit-delicate-touch-576.mp3',
-    },
-  ];
+  const resolvedSrc = useMemo(() => resolveStaticMusicUrl(music.url), [music.url]);
 
-  // Check for existing custom audio in IndexedDB on component mount
+  const isLegacyNonStaticUrl = useMemo(() => {
+    const raw = (music.url || '').trim().toLowerCase();
+    return (
+      raw.startsWith('idb://') ||
+      raw.startsWith('indexeddb://') ||
+      raw.startsWith('blob:') ||
+      raw.includes('firebasestorage.googleapis.com') ||
+      raw.includes('.firebasestorage.app')
+    );
+  }, [music.url]);
+
+  // Clean up preview audio on unmount so no duplicate audio plays
   useEffect(() => {
-    let isMounted = true;
-    getCustomAudioMetadata(DEFAULT_AUDIO_KEY)
-      .then((meta) => {
-        if (isMounted && meta) {
-          setStoredMeta(meta);
-        }
-      })
-      .catch((err) => console.warn('[MusicManager] Could not read metadata:', err));
-
+    const audio = audioRef.current;
     return () => {
-      isMounted = false;
+      if (audio) {
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+      }
     };
   }, []);
 
-  // Resolve current music URL to playable audio src
+  // Reset preview playback when selected track URL changes
   useEffect(() => {
-    let isMounted = true;
-    if (!music.url) {
-      setResolvedSrc('');
-      return;
+    setPreviewError(null);
+    setIsPlayingPreview(false);
+    setIsLoadingPreview(false);
+    setCurrentTime(0);
+    setDuration(0);
+
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
     }
-
-    resolveAudioUrl(music.url)
-      .then((url) => {
-        if (isMounted) {
-          setResolvedSrc(url);
-          if (audioRef.current) {
-            audioRef.current.src = url;
-            if (isPlayingPreview) {
-              audioRef.current.play().catch(() => setIsPlayingPreview(false));
-            }
-          }
-        }
-      })
-      .catch((err) => {
-        console.warn('[MusicManager] Resolve URL error:', err);
-        if (isMounted) setResolvedSrc(music.url);
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [music.url]);
+  }, [resolvedSrc]);
 
   // Handle Play / Pause Preview
   const togglePreview = () => {
     if (!audioRef.current || !resolvedSrc) return;
+    setPreviewError(null);
+
     if (isPlayingPreview) {
       audioRef.current.pause();
       setIsPlayingPreview(false);
     } else {
+      setIsLoadingPreview(true);
       audioRef.current
         .play()
-        .then(() => setIsPlayingPreview(true))
-        .catch((e) => {
-          console.warn('[MusicManager] Play failed:', e);
+        .then(() => {
+          setIsPlayingPreview(true);
+          setIsLoadingPreview(false);
+        })
+        .catch(() => {
           setIsPlayingPreview(false);
+          setIsLoadingPreview(false);
+          setPreviewError(
+            `File audio "${resolvedSrc}" belum ditemukan atau tidak dapat diputar. Pastikan file MP3 sudah berada di folder public${STATIC_MUSIC_FOLDER}/.`
+          );
         });
     }
   };
@@ -146,179 +114,44 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  // Select Curated Preset
-  const handleSelectCuratedTrack = (track: { title: string; artist: string; url: string }) => {
-    setUploadSuccess(null);
-    setUploadError(null);
+  // Select track from available static music list
+  const handleSelectTrack = (track: { title: string; artist: string; url: string }) => {
+    setPreviewError(null);
     onChange({
       ...music,
       title: track.title,
       artist: track.artist,
       url: track.url,
       isCustomUpload: false,
+      fileName: '',
+      fileSize: '',
     });
   };
 
-  // Process File Upload (MP3)
-  const processUploadedFile = async (file: File) => {
-    setUploadError(null);
-    setUploadSuccess(null);
-
-    // Validate type
-    const isAudio =
-      file.type.includes('audio') ||
-      file.name.toLowerCase().endsWith('.mp3') ||
-      file.name.toLowerCase().endsWith('.m4a') ||
-      file.name.toLowerCase().endsWith('.wav');
-
-    if (!isAudio) {
-      setUploadError('Format file tidak didukung. Harap unggah file audio MP3 atau format sejenis.');
-      return;
-    }
-
-    // Validate size (max 25MB)
-    const maxSizeBytes = 25 * 1024 * 1024;
-    if (file.size > maxSizeBytes) {
-      setUploadError('Ukuran file terlalu besar. Batas maksimal file MP3 adalah 25MB.');
-      return;
-    }
-
-    setIsUploading(true);
-
-    try {
-      // Store into IndexedDB for persistent storage across refreshes
-      const result = await saveCustomAudio(file, file.name, DEFAULT_AUDIO_KEY);
-      setStoredMeta(result.metadata);
-
-      // Clean file title: remove extension and format
-      const cleanedTitle = file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
-
-      const updatedMusic: MusicConfig = {
-        ...music,
-        url: result.url,
-        title: cleanedTitle || 'Lagu Pernikahan',
-        artist: 'File MP3 Kustom',
-        isCustomUpload: true,
-        fileName: file.name,
-        fileSize: result.metadata.formattedSize,
-        audioKey: result.key,
-        uploadedAt: result.metadata.updatedAt,
-      };
-
-      onChange(updatedMusic);
-      setUploadSuccess(`"${file.name}" (${result.metadata.formattedSize}) berhasil disimpan permanen!`);
-
-      // Auto play preview
-      setTimeout(() => {
-        if (audioRef.current) {
-          audioRef.current.currentTime = 0;
-          audioRef.current
-            .play()
-            .then(() => setIsPlayingPreview(true))
-            .catch(() => {});
-        }
-      }, 300);
-    } catch (err) {
-      console.error('[MusicManager] Upload error:', err);
-      setUploadError('Gagal menyimpan file audio ke peramban. Silakan coba lagi.');
-    } finally {
-      setIsUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-    }
+  const handleApplyDefaultStatic = () => {
+    handleSelectTrack(DEFAULT_MUSIC_CONFIG);
   };
-
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      processUploadedFile(file);
-    }
-  };
-
-  // Drag & drop handlers
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      processUploadedFile(file);
-    }
-  };
-
-  // Use previously stored custom audio
-  const handleUseStoredCustomAudio = () => {
-    if (!storedMeta) return;
-    const virtualUrl = `idb://${DEFAULT_AUDIO_KEY}`;
-    onChange({
-      ...music,
-      url: virtualUrl,
-      title: storedMeta.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' '),
-      artist: 'File MP3 Kustom',
-      isCustomUpload: true,
-      fileName: storedMeta.name,
-      fileSize: storedMeta.formattedSize,
-      audioKey: DEFAULT_AUDIO_KEY,
-    });
-    setUploadSuccess(`Menggunakan file kustom "${storedMeta.name}"`);
-  };
-
-  // Delete stored custom audio
-  const handleDeleteCustomAudio = async () => {
-    try {
-      if (isPlayingPreview) {
-        audioRef.current?.pause();
-        setIsPlayingPreview(false);
-      }
-      await deleteCustomAudio(DEFAULT_AUDIO_KEY);
-      setStoredMeta(null);
-      setUploadSuccess(null);
-      setConfirmingDelete(false);
-
-      // Revert to first curated track if current music was the custom upload
-      if (music.isCustomUpload || music.url.includes(DEFAULT_AUDIO_KEY)) {
-        const fallback = curatedTracks[0];
-        onChange({
-          ...music,
-          title: fallback.title,
-          artist: fallback.artist,
-          url: fallback.url,
-          isCustomUpload: false,
-          fileName: undefined,
-          fileSize: undefined,
-        });
-      }
-    } catch (err) {
-      console.error('[MusicManager] Delete error:', err);
-    }
-  };
-
-  const isCurrentCustom =
-    music.isCustomUpload || music.url.startsWith('idb://') || music.url.startsWith('indexeddb://');
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto pb-12">
-      {/* Hidden audio element for preview */}
+      {/* Hidden audio element for admin preview */}
       <audio
         ref={audioRef}
+        src={resolvedSrc}
+        preload="metadata"
+        playsInline
         onTimeUpdate={() => {
           if (audioRef.current) setCurrentTime(audioRef.current.currentTime);
         }}
         onLoadedMetadata={() => {
           if (audioRef.current) setDuration(audioRef.current.duration);
+        }}
+        onCanPlay={() => {
+          setIsLoadingPreview(false);
+          setPreviewError(null);
+        }}
+        onWaiting={() => {
+          if (isPlayingPreview) setIsLoadingPreview(true);
         }}
         onEnded={() => {
           setIsPlayingPreview(false);
@@ -326,16 +159,11 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
         }}
         onError={() => {
           setIsPlayingPreview(false);
+          setIsLoadingPreview(false);
+          setPreviewError(
+            `File audio "${resolvedSrc}" belum ditemukan di public${STATIC_MUSIC_FOLDER}/. Pastikan file MP3 sudah ditempatkan dengan nama yang sesuai.`
+          );
         }}
-      />
-
-      {/* Hidden File Input */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="audio/mp3,audio/mpeg,audio/wav,audio/m4a,.mp3"
-        onChange={handleFileInputChange}
-        className="hidden"
       />
 
       {/* Section Header */}
@@ -344,9 +172,31 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
           Pengaturan Musik Latar Belakang
         </h3>
         <p className="text-xs text-[#8C827A] font-light mt-0.5">
-          Unggah lagu MP3 pilihan Anda sendiri atau pilih instrumen akustik. Musik tersimpan permanen dan diputar otomatis saat tamu membuka undangan.
+          Pilih lagu dari daftar musik statis Vercel (<code className="text-[#1F1D1B]">public{STATIC_MUSIC_FOLDER}/</code>) atau masukkan path MP3 relatif. Konfigurasi tersimpan otomatis ke Firestore.
         </p>
       </div>
+
+      {/* Migration notice if Firestore still holds legacy local/Firebase Storage URL */}
+      {isLegacyNonStaticUrl && (
+        <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-900 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold">URL musik lama terdeteksi di konfigurasi tersimpan</p>
+              <p className="text-[11px] text-amber-800 mt-0.5">
+                Saat ini website otomatis mengalihkan ke jalur statis Vercel ({DEFAULT_MUSIC_CONFIG.url}). Klik tombol di samping untuk memperbarui data Firestore.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleApplyDefaultStatic}
+            className="px-3.5 py-2 rounded-xl bg-amber-900 hover:bg-amber-950 text-white text-[11px] font-medium shrink-0 cursor-pointer"
+          >
+            Perbarui ke Path Statis
+          </button>
+        </div>
+      )}
 
       {/* 1. Active Music Player Card */}
       <div className="bg-white rounded-2xl p-6 border border-[#EFE8DC] shadow-xs space-y-4">
@@ -360,16 +210,14 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
                 <span className="text-[10px] uppercase tracking-wider text-[#8C827A] font-medium block">
                   Musik Aktif Undangan
                 </span>
-                {isCurrentCustom && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#C5A059]/15 text-[#8C6D3F] text-[10px] font-medium rounded-full">
-                    <HardDrive className="w-2.5 h-2.5" />
-                    MP3 Kustom
-                  </span>
-                )}
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-medium rounded-full">
+                  <FolderOpen className="w-2.5 h-2.5" />
+                  Vercel Static
+                </span>
               </div>
               <h4 className="text-base font-semibold text-[#1F1D1B] truncate">{music.title}</h4>
               <p className="text-xs text-[#70675F] font-light truncate">
-                {music.artist} {music.fileSize ? `• ${music.fileSize}` : ''}
+                {music.artist} • <span className="font-mono text-[11px]">{resolvedSrc}</span>
               </p>
             </div>
           </div>
@@ -380,7 +228,12 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
             disabled={!resolvedSrc}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#242220] hover:bg-[#383431] disabled:opacity-50 text-xs font-medium text-white transition-all shadow-xs cursor-pointer shrink-0"
           >
-            {isPlayingPreview ? (
+            {isLoadingPreview ? (
+              <>
+                <Loader2 className="w-4 h-4 text-[#D4AF37] animate-spin" />
+                <span>Memuat...</span>
+              </>
+            ) : isPlayingPreview ? (
               <>
                 <Pause className="w-4 h-4 text-[#D4AF37]" />
                 <span>Jeda Preview</span>
@@ -393,6 +246,13 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
             )}
           </button>
         </div>
+
+        {previewError && (
+          <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <span>{previewError}</span>
+          </div>
+        )}
 
         {/* Audio Timeline & Progress Bar */}
         {resolvedSrc && (
@@ -421,7 +281,7 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
             <div>
               <span className="font-medium text-[#1F1D1B] block">Autoplay Saat Dibuka</span>
               <span className="text-[11px] text-[#8C827A] font-light">
-                Putar otomatis begitu tamu klik 'Buka Undangan'
+                Putar otomatis begitu tamu klik &apos;Buka Undangan&apos;
               </span>
             </div>
             <input
@@ -447,171 +307,34 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
             />
           </label>
         </div>
-
-        {isCurrentCustom && (
-          <div className="p-3 rounded-xl bg-amber-50/80 border border-amber-200/80 text-[11px] text-amber-900 flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-            <span>
-              File MP3 kustom tersimpan di browser ini. Tamu yang membuka undangan dari HP/perangkat lain akan otomatis memutar instrumen akustik standar kecuali Anda mengisi URL MP3 eksternal (`https://...`) di bagian bawah.
-            </span>
-          </div>
-        )}
       </div>
 
-      {/* 2. Upload MP3 Feature Card */}
+      {/* 2. Available Static Music List (public/music/ramdan-resti/) */}
       <div className="bg-white rounded-2xl p-6 border border-[#EFE8DC] shadow-xs space-y-4">
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div>
             <div className="flex items-center gap-2">
-              <UploadCloud className="w-5 h-5 text-[#C5A059]" />
-              <h4 className="text-sm font-semibold text-[#1F1D1B]">Unggah File MP3 Latar Belakang</h4>
+              <Sparkles className="w-4 h-4 text-[#C5A059]" />
+              <h4 className="text-sm font-semibold text-[#1F1D1B]">
+                Daftar Lagu Statis Vercel
+              </h4>
             </div>
             <p className="text-xs text-[#8C827A] font-light mt-1">
-              Gunakan lagu MP3 favorit pernikahan Anda. File disimpan di peramban (IndexedDB) sehingga tetap tersimpan permanen dan tidak hilang saat halaman di-refresh.
+              Pilih lagu yang tersedia di folder{' '}
+              <code className="px-1.5 py-0.5 rounded bg-[#FAF8F5] border border-[#E8DFD3] text-[#1F1D1B]">
+                public{STATIC_MUSIC_FOLDER}/
+              </code>
+              . Setiap file MP3 yang diletakkan di folder tersebut otomatis dapat diakses publik oleh semua perangkat.
             </p>
           </div>
-          <span className="px-2.5 py-1 bg-[#FAF8F5] border border-[#E8DFD3] rounded-lg text-[10px] font-medium text-[#70675F] shrink-0">
-            Maks 25 MB
-          </span>
         </div>
 
-        {/* Drag & Drop Upload Dropzone */}
-        <div
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
-          className={`border-2 border-dashed rounded-2xl p-6 sm:p-8 text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-3 ${
-            isDragging
-              ? 'border-[#C5A059] bg-[#C5A059]/10 scale-[1.005]'
-              : 'border-[#E2D8C9] hover:border-[#C5A059] bg-[#FAF8F5] hover:bg-[#F7F3EC]'
-          } ${isUploading ? 'opacity-60 pointer-events-none' : ''}`}
-        >
-          <div className="w-14 h-14 rounded-2xl bg-white shadow-xs border border-[#E8DFD3] flex items-center justify-center text-[#C5A059]">
-            {isUploading ? (
-              <div className="w-6 h-6 border-2 border-[#C5A059] border-t-transparent rounded-full animate-spin" />
-            ) : (
-              <FileAudio className="w-7 h-7" />
-            )}
-          </div>
-
-          <div>
-            <p className="text-sm font-medium text-[#1F1D1B]">
-              {isUploading ? 'Sedang menyimpan file MP3...' : 'Klik untuk memilih file MP3 atau seret ke sini'}
-            </p>
-            <p className="text-[11px] text-[#8C827A] mt-1 font-light">
-              Mendukung format audio .mp3, .m4a, .wav (Disarankan MP3 dengan bitrate 128 - 192 kbps)
-            </p>
-          </div>
-
-          <button
-            type="button"
-            disabled={isUploading}
-            className="px-4 py-2 bg-white hover:bg-[#FAF8F5] text-[#242220] border border-[#D6C7B2] rounded-xl text-xs font-medium shadow-xs transition-colors pointer-events-none"
-          >
-            Pilih File dari Komputer
-          </button>
-        </div>
-
-        {/* Feedback alerts */}
-        {uploadError && (
-          <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-xs flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span>{uploadError}</span>
-          </div>
-        )}
-
-        {uploadSuccess && (
-          <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs flex items-center gap-2">
-            <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span>{uploadSuccess}</span>
-          </div>
-        )}
-
-        {/* Stored Custom File Details Banner (if exists) */}
-        {storedMeta && (
-          <div className="p-4 rounded-xl border border-[#E8DFD3] bg-[#FAF8F5] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-10 h-10 rounded-xl bg-[#C5A059]/20 flex items-center justify-center text-[#C5A059] shrink-0">
-                <FileAudio className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs font-semibold text-[#1F1D1B] truncate">
-                    {storedMeta.name}
-                  </span>
-                  <span className="text-[10px] text-[#70675F]">({storedMeta.formattedSize})</span>
-                </div>
-                <span className="text-[11px] text-emerald-700 font-medium flex items-center gap-1">
-                  <Check className="w-3 h-3" />
-                  Tersimpan di browser (tidak hilang saat refresh)
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-              {!isCurrentCustom ? (
-                <button
-                  type="button"
-                  onClick={handleUseStoredCustomAudio}
-                  className="px-3 py-1.5 bg-[#C5A059] hover:bg-[#B38E47] text-white rounded-lg text-xs font-medium transition-colors cursor-pointer shadow-xs"
-                >
-                  Gunakan File Ini
-                </button>
-              ) : (
-                <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-lg text-xs font-medium">
-                  Sedang Digunakan
-                </span>
-              )}
-
-              {confirmingDelete ? (
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={handleDeleteCustomAudio}
-                    className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg text-[11px] font-medium cursor-pointer"
-                  >
-                    Yakin Hapus?
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmingDelete(false)}
-                    className="px-2 py-1 bg-white border border-[#D6C7B2] text-[#70675F] rounded-lg text-[11px] cursor-pointer"
-                  >
-                    Batal
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setConfirmingDelete(true)}
-                  title="Hapus file dari penyimpanan"
-                  className="p-1.5 text-[#8C827A] hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* 3. Curated Royalty-Free Presets */}
-      <div className="bg-white rounded-2xl p-5 border border-[#EFE8DC] shadow-xs space-y-3">
-        <div className="flex items-center gap-2">
-          <Sparkles className="w-4 h-4 text-[#C5A059]" />
-          <h4 className="text-sm font-semibold text-[#1F1D1B]">Pilihan Musik Akustik Pernikahan</h4>
-        </div>
-        <p className="text-xs text-[#8C827A] font-light">
-          Pilihan musik instrumen berlisensi bebas royalti yang tenang dan syahdu jika tidak memiliki file MP3 sendiri.
-        </p>
-
-        <div className="space-y-2 pt-2">
-          {curatedTracks.map((track, i) => {
-            const isCurrent = !isCurrentCustom && music.url === track.url;
+        <div className="space-y-2 pt-1">
+          {MUSIC_PRESETS.map((track) => {
+            const isCurrent = resolvedSrc === track.url;
             return (
               <div
-                key={i}
+                key={track.id}
                 className={`p-3.5 rounded-xl border transition-all flex items-center justify-between gap-3 ${
                   isCurrent
                     ? 'border-[#C5A059] bg-[#FAF8F5] ring-1 ring-[#C5A059]'
@@ -619,19 +342,25 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
                 }`}
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-8 h-8 rounded-lg bg-[#FAF8F5] flex items-center justify-center text-[#70675F] shrink-0">
-                    <Music className="w-4 h-4" />
+                  <div className="w-9 h-9 rounded-xl bg-[#FAF8F5] border border-[#EFE8DC] flex items-center justify-center text-[#70675F] shrink-0">
+                    {isCurrent ? (
+                      <Check className="w-4 h-4 text-[#C5A059]" />
+                    ) : (
+                      <Music className="w-4 h-4" />
+                    )}
                   </div>
-                  <div className="truncate">
+                  <div className="min-w-0">
                     <h5 className="text-xs font-semibold text-[#1F1D1B] truncate">{track.title}</h5>
-                    <span className="text-[11px] text-[#8C827A] font-light">{track.artist}</span>
+                    <p className="text-[11px] text-[#8C827A] font-light truncate">
+                      {track.artist} • <span className="font-mono">{track.url}</span>
+                    </p>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
-                    onClick={() => handleSelectCuratedTrack(track)}
+                    onClick={() => handleSelectTrack(track)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
                       isCurrent
                         ? 'bg-[#C5A059] text-white'
@@ -647,31 +376,35 @@ export const MusicManager: React.FC<MusicManagerProps> = ({ music, onChange }) =
         </div>
       </div>
 
-      {/* 4. Optional Direct URL Input */}
+      {/* 3. Custom Relative Path / Track Details */}
       <div className="bg-white rounded-2xl p-5 border border-[#EFE8DC] shadow-xs space-y-4">
         <div>
-          <h4 className="text-sm font-semibold text-[#1F1D1B]">Atau Masukkan URL Audio MP3 Langsung</h4>
+          <h4 className="text-sm font-semibold text-[#1F1D1B]">
+            Path File MP3 Lokal Kustom
+          </h4>
           <p className="text-xs text-[#8C827A] font-light mt-0.5">
-            Jika lagu Anda telah di-hosting di server external, CDN, atau Google Drive direct link.
+            Jika Anda menambahkan file MP3 dengan nama lain ke folder{' '}
+            <code className="text-[#1F1D1B]">public{STATIC_MUSIC_FOLDER}/</code>, masukkan URL relatifnya di sini (contoh:{' '}
+            <code className="text-[#1F1D1B]">{STATIC_MUSIC_FOLDER}/nama-lagu.mp3</code>).
           </p>
         </div>
 
         <div className="space-y-3 text-xs">
           <div>
-            <label className="block font-medium text-[#3D3833] mb-1">URL File Audio MP3</label>
+            <label className="block font-medium text-[#3D3833] mb-1">URL / Path File Audio MP3</label>
             <input
-              type="url"
-              value={isCurrentCustom ? '' : music.url}
+              type="text"
+              value={isLegacyNonStaticUrl ? DEFAULT_MUSIC_CONFIG.url : music.url}
               onChange={(e) => {
-                setUploadSuccess(null);
+                const rawVal = e.target.value;
                 onChange({
                   ...music,
-                  url: e.target.value,
+                  url: rawVal,
                   isCustomUpload: false,
                 });
               }}
-              placeholder={isCurrentCustom ? 'Sedang menggunakan file kustom yang diunggah' : 'https://example.com/audio/lagu-nikah.mp3'}
-              className="w-full px-3.5 py-2.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-xl focus:outline-none focus:border-[#C5A059]"
+              placeholder={`${STATIC_MUSIC_FOLDER}/nama-lagu.mp3`}
+              className="w-full px-3.5 py-2.5 bg-[#FAF8F5] border border-[#E8DFD3] rounded-xl focus:outline-none focus:border-[#C5A059] font-mono"
             />
           </div>
 

@@ -1,0 +1,3 @@
+# Letakkan file MP3 musik latar di folder ini (public/music/ramdan-resti/).
+# File di folder ini akan dapat diakses langsung melalui URL relatif:
+# /music/ramdan-resti/nama-lagu.mp3
