@@ -9,7 +9,7 @@ import {
   signAdminToken,
   verifyAdminBearerToken,
   verifyAdminPasscode,
-} from './adminAuth';
+} from './adminAuth.js';
 
 export const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB strict limit
 const MAX_JSON_BODY_BYTES = 16 * 1024; // 16 KB

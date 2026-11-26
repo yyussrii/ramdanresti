@@ -6,7 +6,7 @@ import {
   handleAdminLogin,
   handleMediaUpload,
   handleMediaDelete,
-} from './api/_lib/mediaHandlers';
+} from './api/_lib/mediaHandlers.js';
 
 async function startServer() {
   const app = express();
