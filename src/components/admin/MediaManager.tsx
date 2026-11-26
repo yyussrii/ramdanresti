@@ -97,22 +97,31 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
     },
   ];
 
-  const loadMedia = async () => {
-    setIsLoading(true);
-    try {
-      const items = await getAllMediaItems();
-      setMediaList(items);
-    } catch (e) {
-      console.error('Failed to load media list:', e);
-      setErrorNotice('Gagal memuat daftar foto dari Cloud Firestore.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
+const loadMedia = async () => {
+  setIsLoading(true);
 
-  useEffect(() => {
-    loadMedia();
-  }, []);
+  try {
+    const items = await getAllMediaItems(authToken);
+    setMediaList(items);
+    setErrorNotice(null);
+  } catch (e) {
+    console.error('Failed to load media list:', e);
+
+    if (e instanceof MediaStorageError && e.code === 'UNAUTHORIZED') {
+      onAuthExpired?.(e.message);
+    } else {
+      setErrorNotice(
+        'Gagal memuat daftar foto dari Vercel Blob. Periksa koneksi atau konfigurasi server.'
+      );
+    }
+  } finally {
+    setIsLoading(false);
+  }
+};
+
+useEffect(() => {
+  loadMedia();
+}, [authToken]);
 
   const triggerNotice = (msg: string) => {
     setActionNotice(msg);

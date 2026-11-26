@@ -475,30 +475,81 @@ export async function replaceMediaFile(
 /**
  * Get all media items from Cloud Firestore (no LocalStorage / IndexedDB)
  */
-export async function getAllMediaItems(): Promise<MediaItem[]> {
+
+/**
+ * Get all media items from authenticated Vercel Blob API.
+ * Does not depend on Firestore for listing photos.
+ */
+export async function getAllMediaItems(
+  authToken?: string | null
+): Promise<MediaItem[]> {
+  if (!authToken) {
+    throw new MediaStorageError(
+      'UNAUTHORIZED',
+      'Sesi admin dibutuhkan untuk memuat daftar foto.'
+    );
+  }
+
   if (inFlightAllRequest) {
     return inFlightAllRequest;
   }
 
   inFlightAllRequest = (async () => {
-    const items: MediaItem[] = [];
+    const response = await fetch('/api/media/list', {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+      cache: 'no-store',
+    });
 
-    if (isFirebaseConfigured && db) {
-      const mediaCollection = collection(db, 'invitations', INVITATION_ID, 'media');
-      const snapshot = await getDocs(mediaCollection);
-      snapshot.forEach((docSnap) => {
-        const cloudData = docSnap.data() as MediaItem;
-        if (cloudData && cloudData.id && cloudData.url) {
-          items.push(cloudData);
-          if (cloudData.url.startsWith('idb://') && cloudData.dataUrl) {
-            legacyUrlCache.set(cloudData.id, cloudData.dataUrl);
-          }
-        }
-      });
+    if (response.status === 401) {
+      throw new MediaStorageError(
+        'UNAUTHORIZED',
+        'Sesi admin kedaluwarsa. Silakan login kembali.'
+      );
     }
 
-    items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    return items;
+    if (!response.ok) {
+      throw new Error(
+        `Gagal memuat foto dari Vercel Blob (${response.status})`
+      );
+    }
+
+    const result = await response.json();
+
+    if (!Array.isArray(result.blobs)) {
+      throw new Error('Format respons daftar foto tidak valid.');
+    }
+
+    const items: MediaItem[] = result.blobs.map((blob: {
+      url: string;
+      pathname: string;
+      size: number;
+      uploadedAt: string;
+      contentType?: string;
+    }) => {
+      const name = blob.pathname.split('/').pop() || blob.pathname;
+
+      return {
+        id: blob.pathname,
+        name,
+        size: blob.size,
+        formattedSize: formatBytes(blob.size),
+        type: blob.contentType || 'image/jpeg',
+        createdAt: blob.uploadedAt,
+        category: 'general',
+        url: blob.url,
+        pathname: blob.pathname,
+        storageProvider: 'vercel-blob',
+      };
+    });
+
+    return items.sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() -
+        new Date(a.createdAt).getTime()
+    );
   })();
 
   try {
@@ -507,6 +558,7 @@ export async function getAllMediaItems(): Promise<MediaItem[]> {
     inFlightAllRequest = null;
   }
 }
+
 
 /**
  * Delete a media item from Vercel Blob (server-side) and Cloud Firestore
