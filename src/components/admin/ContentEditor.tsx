@@ -32,6 +32,8 @@ interface ContentEditorProps {
   onChange?: (updatedContent: ContentConfig) => void;
   onSave?: (updatedContent: ContentConfig) => Promise<void> | void;
   isSaving?: boolean;
+  authToken?: string | null;
+  onAuthExpired?: (message?: string) => void;
 }
 
 export const ContentEditor: React.FC<ContentEditorProps> = ({
@@ -39,6 +41,8 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({
   onChange,
   onSave,
   isSaving = false,
+  authToken,
+  onAuthExpired,
 }) => {
   // Local state for blazing-fast, lag-free editing (no database calls on keystrokes)
   const [content, setContent] = useState<ContentConfig>(initialContent);
@@ -842,12 +846,15 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({
             <div>
               <ImageUploaderField
                 label="Foto Cover / Hero Utama"
-                sublabel="Seret & lepas foto JPG/PNG langsung ke kotak di bawah atau pilih dari galeri database"
+                sublabel="Seret & lepas foto JPG/JPEG/PNG/WebP (maks. 5 MB) atau pilih dari galeri media"
                 value={content.hero.heroImageUrl || content.hero.heroImage || ''}
                 onChange={(url) => updateHero({ heroImageUrl: url, heroImage: url })}
                 category="hero"
                 aspectRatio="landscape"
                 placeholderName="Cover Hero"
+                authToken={authToken}
+                onAuthExpired={onAuthExpired}
+                content={content}
               />
             </div>
 
@@ -1163,12 +1170,15 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({
               <div>
                 <ImageUploaderField
                   label="Foto Potret Mempelai Pria"
-                  sublabel="Format JPG/PNG dengan seret & lepas atau pilih dari galeri media"
+                  sublabel="Format JPG/JPEG/PNG/WebP (maks. 5 MB) atau pilih dari galeri media"
                   value={content.couple.groom.photoUrl || content.couple.groom.image || ''}
                   onChange={(url) => updateGroom({ photoUrl: url, image: url })}
                   category="couple"
                   aspectRatio="portrait"
                   placeholderName="Mempelai Pria"
+                  authToken={authToken}
+                  onAuthExpired={onAuthExpired}
+                  content={content}
                 />
               </div>
             </div>
@@ -1352,12 +1362,15 @@ export const ContentEditor: React.FC<ContentEditorProps> = ({
               <div>
                 <ImageUploaderField
                   label="Foto Potret Mempelai Wanita"
-                  sublabel="Format JPG/PNG dengan seret & lepas atau pilih dari galeri media"
+                  sublabel="Format JPG/JPEG/PNG/WebP (maks. 5 MB) atau pilih dari galeri media"
                   value={content.couple.bride.photoUrl || content.couple.bride.image || ''}
                   onChange={(url) => updateBride({ photoUrl: url, image: url })}
                   category="couple"
                   aspectRatio="portrait"
                   placeholderName="Mempelai Wanita"
+                  authToken={authToken}
+                  onAuthExpired={onAuthExpired}
+                  content={content}
                 />
               </div>
             </div>

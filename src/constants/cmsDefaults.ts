@@ -550,7 +550,7 @@ export const DEFAULT_SETTINGS_CONFIG: SettingsConfig = {
   enableRsvp: true,
   enableWishes: true,
   enableGift: true,
-  adminPin: '123123',
+  adminPin: '',
 };
 
 // ============================================================================

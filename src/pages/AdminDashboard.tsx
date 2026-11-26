@@ -11,7 +11,6 @@ import {
   Invitation,
 } from '../types';
 import { dbService } from '../services/dbService';
-import { preloadMediaCache } from '../services/mediaStorageService';
 import { AdminSidebar, AdminTab } from '../components/admin/AdminSidebar';
 import { AdminHeader } from '../components/admin/AdminHeader';
 import { DashboardOverview } from '../components/admin/DashboardOverview';
@@ -52,10 +51,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onBackToInvitation,
   onNavigateToSlug,
 }) => {
-  // 1. Authentication State (User requirement: password "123123")
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return sessionStorage.getItem('wedding_admin_auth') === 'true';
-  });
+  // 1. Server-Verified Authentication State (Bearer token held in memory only)
+  const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
   const [adminPin, setAdminPin] = useState('');
   const [authError, setAuthError] = useState('');
 
@@ -101,7 +100,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setInvitation(invData);
       setGuests(guestData);
       setHasUnpublishedChanges(Boolean(invData.hasUnpublishedChanges));
-      preloadMediaCache().catch(() => {});
     } catch (err) {
       console.error('Error loading admin data:', err);
       showToast('Gagal memuat data dari database.');
@@ -110,21 +108,58 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanInput = adminPin.trim();
+    if (!cleanInput) {
+      setAuthError('Silakan masukkan kata sandi admin.');
+      return;
+    }
 
-    const configuredPass = invitation?.settings?.adminPasscode || invitation?.settings?.adminPin || '123123';
-    if (cleanInput === configuredPass || cleanInput === '123123') {
+    setIsLoggingIn(true);
+    setAuthError('');
+    try {
+      const response = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passcode: cleanInput }),
+      });
+
+      let payload: { token?: string; error?: string } = {};
+      try {
+        payload = (await response.json()) as { token?: string; error?: string };
+      } catch {
+        payload = {};
+      }
+
+      if (!response.ok || !payload.token) {
+        setAuthError(
+          payload.error || 'Kata sandi salah atau autentikasi server belum dikonfigurasi.'
+        );
+        return;
+      }
+
+      sessionStorage.removeItem('wedding_admin_auth');
+      setAdminToken(payload.token);
       setIsAuthenticated(true);
-      sessionStorage.setItem('wedding_admin_auth', 'true');
+      setAdminPin('');
       setAuthError('');
-    } else {
-      setAuthError('Kata sandi salah. Silakan periksa kembali dan coba lagi.');
+    } catch {
+      setAuthError('Tidak dapat terhubung ke server autentikasi. Silakan coba kembali.');
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
+  const handleAuthExpired = (message?: string) => {
+    setAdminToken(null);
+    setIsAuthenticated(false);
+    sessionStorage.removeItem('wedding_admin_auth');
+    setAuthError(message || 'Sesi admin telah berakhir. Silakan masuk kembali.');
+  };
+
   const handleLogout = () => {
+    setAdminToken(null);
     setIsAuthenticated(false);
     sessionStorage.removeItem('wedding_admin_auth');
     setAdminPin('');
@@ -242,9 +277,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             <button
               type="submit"
-              className="w-full py-3 px-4 rounded-xl bg-[#C5A059] hover:bg-[#D4AF37] active:scale-[0.98] text-[#1E1C1A] text-xs font-semibold tracking-wider uppercase transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer mt-2"
+              disabled={isLoggingIn}
+              className="w-full py-3 px-4 rounded-xl bg-[#C5A059] hover:bg-[#D4AF37] active:scale-[0.98] disabled:opacity-60 text-[#1E1C1A] text-xs font-semibold tracking-wider uppercase transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer mt-2"
             >
-              <span>Masuk ke Dashboard CMS</span>
+              <span>{isLoggingIn ? 'Memverifikasi...' : 'Masuk ke Dashboard CMS'}</span>
             </button>
           </form>
 
@@ -368,6 +404,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <ContentEditor
                 content={currentContent}
                 isSaving={isSaving}
+                authToken={adminToken}
+                onAuthExpired={handleAuthExpired}
                 onSave={async (updatedContent) => {
                   await handleUpdateDraftConfig({ content: updatedContent });
                   showToast('Perubahan konten berhasil disimpan!');
@@ -387,6 +425,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             {currentTab === 'media' && (
               <MediaManager
                 content={currentContent}
+                settings={invitation.settings}
+                authToken={adminToken}
+                onAuthExpired={handleAuthExpired}
                 onChangeContent={(updatedContent) => {
                   handleUpdateDraftConfig({ content: updatedContent }).catch(() => {});
                 }}

@@ -1,18 +1,33 @@
 // ============================================================================
-// MEDIA STORAGE SERVICE (Cross-Device Cloud Sync + Local IndexedDB Cache)
-// Automatically compresses uploaded photos to lightweight WebP/JPEG (< 180KB)
-// and syncs to Cloud Firestore under `/invitations/{invitationId}/media/{mediaId}`
-// so that uploaded photos load fast & reliably on ALL devices & guests' phones!
+// MEDIA STORAGE SERVICE (Vercel Blob Permanent Storage + Firestore Metadata)
+// Stores uploaded photos permanently in Vercel Blob via authenticated server API
+// and persists URL + metadata in Cloud Firestore `/invitations/{id}/media/{mediaId}`.
+// Never stores uploaded photo binaries in LocalStorage, IndexedDB, or browser cache.
 // ============================================================================
 
 import { doc, getDoc, setDoc, getDocs, collection, deleteDoc } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../config/firebase';
 import { INITIAL_INVITATION } from './seedData';
+import type { ContentConfig, SettingsConfig } from '../types';
 
-const DB_NAME = 'WeddingAppMediaDB';
-const DB_VERSION = 1;
-const STORE_NAME = 'media_files';
 const INVITATION_ID = INITIAL_INVITATION.id;
+
+export const MAX_MEDIA_FILE_BYTES = 5 * 1024 * 1024; // 5 MB max per photo
+const VERCEL_SAFE_TRANSFER_BYTES = 3.8 * 1024 * 1024; // Safe ceiling under Vercel Hobby 4.5 MB body limit
+const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
+const ALLOWED_EXTENSION_RE = /\.(jpg|jpeg|png|webp)$/i;
+
+export class MediaStorageError extends Error {
+  code: 'INVALID_FILE' | 'FILE_TOO_LARGE' | 'UNAUTHORIZED' | 'UPLOAD_FAILED' | 'DELETE_FAILED' | 'CONFIG_ERROR';
+  constructor(
+    code: 'INVALID_FILE' | 'FILE_TOO_LARGE' | 'UNAUTHORIZED' | 'UPLOAD_FAILED' | 'DELETE_FAILED' | 'CONFIG_ERROR',
+    message: string
+  ) {
+    super(message);
+    this.name = 'MediaStorageError';
+    this.code = code;
+  }
+}
 
 export interface MediaItem {
   id: string;
@@ -21,25 +36,23 @@ export interface MediaItem {
   formattedSize: string;
   type: string;
   createdAt: string;
+  updatedAt?: string;
   category?: 'couple' | 'hero' | 'gallery' | 'general' | string;
-  url: string; // 'idb://media_xxx'
-  blob?: Blob;
-  thumbnailUrl?: string;
-  dataUrl?: string; // High quality optimized Base64 data for universal cross-device rendering
+  url: string; // Permanent Vercel Blob HTTPS URL
+  pathname?: string;
+  storageProvider?: 'vercel-blob' | 'legacy' | string;
   width?: number;
   height?: number;
+  // Optional legacy fields for read-only backward compatibility if old Firestore docs exist
+  thumbnailUrl?: string;
+  dataUrl?: string;
 }
 
-// In-memory cache for fast synchronous lookup
-const objectUrlCache = new Map<string, string>();
-// Deduplicate concurrent Firestore fetches for the same media ID
+// In-memory cache ONLY for resolving legacy `idb://` records in old Firestore docs if any exist
+const legacyUrlCache = new Map<string, string>();
 const inFlightItemRequests = new Map<string, Promise<MediaItem | null>>();
-// Deduplicate concurrent getAllMediaItems calls
 let inFlightAllRequest: Promise<MediaItem[]> | null = null;
 
-/**
- * Format bytes into readable format (e.g. "145 KB")
- */
 export function formatBytes(bytes: number, decimals = 1): string {
   if (bytes === 0) return '0 Bytes';
   const k = 1024;
@@ -49,284 +62,418 @@ export function formatBytes(bytes: number, decimals = 1): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
+export function isVercelBlobUrl(url: string | undefined | null): boolean {
+  if (!url || typeof url !== 'string') return false;
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    return (
+      parsed.protocol === 'https:' &&
+      (host.endsWith('.public.blob.vercel-storage.com') || host.endsWith('.blob.vercel-storage.com'))
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function validateMediaFile(file: File | Blob): { mimeType: string; fileName: string } {
+  const fileName =
+    file instanceof File && file.name ? file.name : `foto_${new Date().toISOString().slice(0, 10)}.jpg`;
+  const normalizedType = (file.type || '').toLowerCase();
+
+  const validMime = ALLOWED_MIME_TYPES.has(normalizedType);
+  const validExt = ALLOWED_EXTENSION_RE.test(fileName);
+
+  if (!validMime && !validExt) {
+    throw new MediaStorageError(
+      'INVALID_FILE',
+      'Format foto tidak didukung. Harap pilih file JPG, JPEG, PNG, atau WebP.'
+    );
+  }
+
+  if (file.size <= 0) {
+    throw new MediaStorageError('INVALID_FILE', 'File foto kosong atau tidak dapat dibaca.');
+  }
+
+  if (file.size > MAX_MEDIA_FILE_BYTES) {
+    throw new MediaStorageError(
+      'FILE_TOO_LARGE',
+      `Ukuran foto "${fileName}" (${formatBytes(file.size)}) melebihi batas maksimal 5 MB.`
+    );
+  }
+
+  let resolvedMime = validMime ? (normalizedType === 'image/jpg' ? 'image/jpeg' : normalizedType) : 'image/jpeg';
+  if (!validMime && validExt) {
+    if (/\.png$/i.test(fileName)) resolvedMime = 'image/png';
+    else if (/\.webp$/i.test(fileName)) resolvedMime = 'image/webp';
+    else resolvedMime = 'image/jpeg';
+  }
+
+  return { mimeType: resolvedMime, fileName };
+}
+
+async function readImageDimensions(file: Blob): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const tempUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const width = img.naturalWidth || img.width || 0;
+      const height = img.naturalHeight || img.height || 0;
+      URL.revokeObjectURL(tempUrl);
+      resolve({ width, height });
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(tempUrl);
+      resolve({ width: 0, height: 0 });
+    };
+    img.src = tempUrl;
+  });
+}
+
 /**
- * Open or initialize local IndexedDB
+ * Ensures transfer payload stays safely under Vercel Hobby's 4.5 MB serverless request limit
+ * when admin uploads a 3.8 MB – 5.0 MB photo, without degrading smaller photos.
  */
-function openDB(): Promise<IDBDatabase> {
+async function prepareBlobForTransfer(
+  file: Blob,
+  mimeType: string
+): Promise<{ blob: Blob; mimeType: string; width: number; height: number }> {
+  const { width, height } = await readImageDimensions(file);
+
+  if (file.size <= VERCEL_SAFE_TRANSFER_BYTES) {
+    return { blob: file, mimeType, width, height };
+  }
+
   return new Promise((resolve, reject) => {
-    if (typeof window === 'undefined' || !window.indexedDB) {
-      reject(new Error('IndexedDB is not supported in this environment'));
-      return;
-    }
+    const tempUrl = URL.createObjectURL(file);
+    const img = new Image();
 
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    img.onload = async () => {
+      try {
+        const origW = img.naturalWidth || img.width || 1600;
+        const origH = img.naturalHeight || img.height || 1600;
+        const maxDim = 2048;
+        let targetW = origW;
+        let targetH = origH;
 
-    request.onupgradeneeded = (event) => {
-      const dbInstance = (event.target as IDBOpenDBRequest).result;
-      if (!dbInstance.objectStoreNames.contains(STORE_NAME)) {
-        dbInstance.createObjectStore(STORE_NAME, { keyPath: 'id' });
+        if (targetW > maxDim || targetH > maxDim) {
+          const ratio = Math.min(maxDim / targetW, maxDim / targetH);
+          targetW = Math.round(targetW * ratio);
+          targetH = Math.round(targetH * ratio);
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          URL.revokeObjectURL(tempUrl);
+          reject(new MediaStorageError('INVALID_FILE', 'Browser tidak dapat memproses gambar ini.'));
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+
+        const targetOutputMime =
+          mimeType === 'image/png' ? 'image/webp' : mimeType === 'image/webp' ? 'image/webp' : 'image/jpeg';
+
+        const encodeBlob = (q: number) =>
+          new Promise<Blob | null>((res) => canvas.toBlob(res, targetOutputMime, q));
+
+        let quality = 0.88;
+        let outBlob = await encodeBlob(quality);
+
+        while (outBlob && outBlob.size > VERCEL_SAFE_TRANSFER_BYTES && quality > 0.55) {
+          quality -= 0.08;
+          outBlob = await encodeBlob(quality);
+        }
+
+        while (outBlob && outBlob.size > VERCEL_SAFE_TRANSFER_BYTES && targetW > 800) {
+          targetW = Math.round(targetW * 0.8);
+          targetH = Math.round(targetH * 0.8);
+          canvas.width = targetW;
+          canvas.height = targetH;
+          ctx.drawImage(img, 0, 0, targetW, targetH);
+          outBlob = await encodeBlob(0.78);
+        }
+
+        URL.revokeObjectURL(tempUrl);
+
+        if (!outBlob || outBlob.size > VERCEL_SAFE_TRANSFER_BYTES) {
+          reject(
+            new MediaStorageError(
+              'FILE_TOO_LARGE',
+              'Ukuran foto terlalu besar setelah diproses. Gunakan foto di bawah 4.5 MB.'
+            )
+          );
+          return;
+        }
+
+        resolve({
+          blob: outBlob,
+          mimeType: outBlob.type || targetOutputMime,
+          width: origW,
+          height: origH,
+        });
+      } catch {
+        URL.revokeObjectURL(tempUrl);
+        reject(new MediaStorageError('UPLOAD_FAILED', 'Gagal menyiapkan foto untuk diunggah.'));
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error('Failed to open Media IndexedDB'));
+    img.onerror = () => {
+      URL.revokeObjectURL(tempUrl);
+      reject(new MediaStorageError('INVALID_FILE', 'File gambar rusak atau tidak dapat dibuka.'));
+    };
+
+    img.src = tempUrl;
   });
 }
 
-/**
- * Helper to save a media item silently to local IndexedDB
- */
-async function saveToLocalIndexedDB(item: MediaItem): Promise<void> {
+async function uploadToVercelBlobEndpoint(
+  blob: Blob,
+  mimeType: string,
+  fileName: string,
+  category: string,
+  authToken: string
+): Promise<{ url: string; pathname: string; contentType: string; size: number; name: string }> {
+  if (!authToken) {
+    throw new MediaStorageError(
+      'UNAUTHORIZED',
+      'Sesi admin dibutuhkan untuk mengunggah foto. Silakan login ulang.'
+    );
+  }
+
+  const response = await fetch('/api/media/upload', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${authToken}`,
+      'Content-Type': mimeType,
+      'X-File-Name': encodeURIComponent(fileName),
+      'X-Media-Category': category,
+    },
+    body: blob,
+  });
+
+  let payload: Record<string, unknown> = {};
   try {
-    const localDb = await openDB();
-    await new Promise<void>((resolve, reject) => {
-      const tx = localDb.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      store.put(item);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch (err) {
-    console.warn('[MediaStorage] Local IndexedDB write warning:', err);
+    payload = (await response.json()) as Record<string, unknown>;
+  } catch {
+    payload = {};
   }
+
+  if (response.status === 401) {
+    throw new MediaStorageError(
+      'UNAUTHORIZED',
+      typeof payload.error === 'string'
+        ? payload.error
+        : 'Sesi admin telah kedaluwarsa. Silakan login kembali.'
+    );
+  }
+
+  if (response.status === 503) {
+    throw new MediaStorageError(
+      'CONFIG_ERROR',
+      typeof payload.error === 'string'
+        ? payload.error
+        : 'Konfigurasi Vercel Blob belum lengkap di server.'
+    );
+  }
+
+  if (!response.ok || typeof payload.url !== 'string') {
+    throw new MediaStorageError(
+      response.status === 413 ? 'FILE_TOO_LARGE' : 'UPLOAD_FAILED',
+      typeof payload.error === 'string'
+        ? payload.error
+        : 'Gagal mengunggah foto ke Vercel Blob Storage.'
+    );
+  }
+
+  return {
+    url: payload.url,
+    pathname: typeof payload.pathname === 'string' ? payload.pathname : '',
+    contentType: typeof payload.contentType === 'string' ? payload.contentType : mimeType,
+    size: typeof payload.size === 'number' ? payload.size : blob.size,
+    name: typeof payload.name === 'string' ? payload.name : fileName,
+  };
 }
 
-/**
- * Detect best supported compressed image MIME type (WebP preferred: 30-45% smaller than JPEG)
- */
-function encodeCanvasOptimized(canvas: HTMLCanvasElement, quality: number): { dataUrl: string; mimeType: string } {
-  const webpData = canvas.toDataURL('image/webp', quality);
-  if (webpData.startsWith('data:image/webp')) {
-    return { dataUrl: webpData, mimeType: 'image/webp' };
+async function deleteFromVercelBlobEndpoint(url: string, authToken: string): Promise<void> {
+  if (!isVercelBlobUrl(url)) return;
+  if (!authToken) {
+    throw new MediaStorageError(
+      'UNAUTHORIZED',
+      'Sesi admin dibutuhkan untuk menghapus foto dari Vercel Blob.'
+    );
   }
-  return { dataUrl: canvas.toDataURL('image/jpeg', quality), mimeType: 'image/jpeg' };
-}
 
-/**
- * Compress and optimize an image file for fast mobile & cross-device delivery (< 180KB)
- * Produces crisp high-definition result that renders smoothly without buffering
- */
-export async function optimizeImageForWeb(
-  file: Blob | File,
-  maxWidth = 1080,
-  maxHeight = 1080,
-  initialQuality = 0.76
-): Promise<{ dataUrl: string; thumbnailUrl: string; width: number; height: number; size: number; mimeType: string }> {
-  return new Promise((resolve) => {
-    try {
-      const img = new Image();
-      const tempUrl = URL.createObjectURL(file);
-
-      img.onload = () => {
-        try {
-          const originalWidth = img.width || 800;
-          const originalHeight = img.height || 800;
-
-          // 1. Calculate Main Optimized Dimensions (max 1080px - sharp on retina mobile & desktop)
-          let targetWidth = originalWidth;
-          let targetHeight = originalHeight;
-          if (targetWidth > maxWidth || targetHeight > maxHeight) {
-            const ratio = Math.min(maxWidth / targetWidth, maxHeight / targetHeight);
-            targetWidth = Math.round(targetWidth * ratio);
-            targetHeight = Math.round(targetHeight * ratio);
-          }
-
-          const canvas = document.createElement('canvas');
-          canvas.width = targetWidth;
-          canvas.height = targetHeight;
-          const ctx = canvas.getContext('2d');
-
-          let dataUrl = '';
-          let mimeType = 'image/jpeg';
-          let currentQuality = initialQuality;
-
-          if (ctx) {
-            ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-            const encoded = encodeCanvasOptimized(canvas, currentQuality);
-            dataUrl = encoded.dataUrl;
-            mimeType = encoded.mimeType;
-
-            // Target <= 190KB Base64 (~140KB binary) for instant 4G mobile loading without lag/buffering
-            while (dataUrl.length > 190000 && currentQuality > 0.36) {
-              currentQuality -= 0.08;
-              targetWidth = Math.round(targetWidth * 0.88);
-              targetHeight = Math.round(targetHeight * 0.88);
-              canvas.width = targetWidth;
-              canvas.height = targetHeight;
-              ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-              const reEncoded = encodeCanvasOptimized(canvas, currentQuality);
-              dataUrl = reEncoded.dataUrl;
-              mimeType = reEncoded.mimeType;
-            }
-
-            // Hard safety guarantee: never exceed 420KB Base64 so Firestore 1MB limit is never breached
-            while (dataUrl.length > 420000 && targetWidth > 320) {
-              targetWidth = Math.round(targetWidth * 0.75);
-              targetHeight = Math.round(targetHeight * 0.75);
-              canvas.width = targetWidth;
-              canvas.height = targetHeight;
-              ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-              const reEncoded = encodeCanvasOptimized(canvas, 0.45);
-              dataUrl = reEncoded.dataUrl;
-              mimeType = reEncoded.mimeType;
-            }
-          }
-
-          // 2. Calculate Ultra-Lightweight Instant Thumbnail (max 220px, ~8KB)
-          let thumbWidth = originalWidth;
-          let thumbHeight = originalHeight;
-          const thumbMax = 220;
-          if (thumbWidth > thumbMax || thumbHeight > thumbMax) {
-            const ratio = Math.min(thumbMax / thumbWidth, thumbMax / thumbHeight);
-            thumbWidth = Math.round(thumbWidth * ratio);
-            thumbHeight = Math.round(thumbHeight * ratio);
-          }
-
-          const thumbCanvas = document.createElement('canvas');
-          thumbCanvas.width = thumbWidth;
-          thumbCanvas.height = thumbHeight;
-          const thumbCtx = thumbCanvas.getContext('2d');
-
-          let thumbnailUrl = '';
-          if (thumbCtx) {
-            thumbCtx.drawImage(img, 0, 0, thumbWidth, thumbHeight);
-            thumbnailUrl = encodeCanvasOptimized(thumbCanvas, 0.6).dataUrl;
-          }
-
-          URL.revokeObjectURL(tempUrl);
-
-          const approxSize = Math.round((dataUrl.length * 3) / 4);
-
-          resolve({
-            dataUrl,
-            thumbnailUrl: thumbnailUrl || dataUrl,
-            width: originalWidth,
-            height: originalHeight,
-            size: approxSize,
-            mimeType,
-          });
-        } catch (err) {
-          console.warn('[MediaStorage] Compression error:', err);
-          URL.revokeObjectURL(tempUrl);
-          resolve({
-            dataUrl: '',
-            thumbnailUrl: '',
-            width: 0,
-            height: 0,
-            size: file.size,
-            mimeType: 'image/jpeg',
-          });
-        }
-      };
-
-      img.onerror = () => {
-        URL.revokeObjectURL(tempUrl);
-        resolve({
-          dataUrl: '',
-          thumbnailUrl: '',
-          width: 0,
-          height: 0,
-          size: file.size,
-          mimeType: 'image/jpeg',
-        });
-      };
-
-      img.src = tempUrl;
-    } catch {
-      resolve({
-        dataUrl: '',
-        thumbnailUrl: '',
-        width: 0,
-        height: 0,
-        size: file.size,
-        mimeType: 'image/jpeg',
-      });
-    }
+  const response = await fetch('/api/media/delete', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${authToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ url }),
   });
+
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = (await response.json()) as Record<string, unknown>;
+  } catch {
+    payload = {};
+  }
+
+  if (response.status === 401) {
+    throw new MediaStorageError(
+      'UNAUTHORIZED',
+      typeof payload.error === 'string'
+        ? payload.error
+        : 'Sesi admin kedaluwarsa. Silakan login kembali.'
+    );
+  }
+
+  if (!response.ok) {
+    throw new MediaStorageError(
+      'DELETE_FAILED',
+      typeof payload.error === 'string'
+        ? payload.error
+        : 'Gagal menghapus file foto dari Vercel Blob Storage.'
+    );
+  }
 }
 
 /**
- * Save an uploaded image file (File or Blob) to IndexedDB AND Cloud Firestore
- * Allows seamless synchronization across devices
+ * Upload a new image permanently to Vercel Blob (server-side) and save its metadata in Firestore
  */
 export async function saveMediaFile(
   file: File | Blob,
-  options?: {
+  options: {
+    authToken: string;
     name?: string;
     category?: 'couple' | 'hero' | 'gallery' | 'general' | string;
   }
 ): Promise<MediaItem> {
+  const { mimeType, fileName } = validateMediaFile(file);
+  const displayName = options.name?.trim() || fileName;
+  const category = options.category || 'general';
+
+  const prepared = await prepareBlobForTransfer(file, mimeType);
+  const uploaded = await uploadToVercelBlobEndpoint(
+    prepared.blob,
+    prepared.mimeType,
+    displayName,
+    category,
+    options.authToken
+  );
+
   const id = `media_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-  const virtualUrl = `idb://${id}`;
-  const fileName =
-    options?.name ||
-    (file instanceof File && file.name ? file.name : `foto_${new Date().toISOString().slice(0, 10)}.webp`);
-
-  // Optimize and generate ready-to-display web dataUrl
-  const { dataUrl, thumbnailUrl, width, height, size, mimeType } = await optimizeImageForWeb(file);
-
-  if (!dataUrl || !dataUrl.startsWith('data:image/')) {
-    throw new Error('Format gambar tidak dapat diproses oleh browser. Gunakan file JPG, PNG, atau WEBP.');
-  }
+  const now = new Date().toISOString();
 
   const mediaItem: MediaItem = {
     id,
-    name: fileName,
-    size: size || file.size,
-    formattedSize: formatBytes(size || file.size),
-    type: mimeType,
-    createdAt: new Date().toISOString(),
-    category: options?.category || 'general',
-    url: virtualUrl,
-    dataUrl,
-    thumbnailUrl,
-    width,
-    height,
+    name: uploaded.name || displayName,
+    size: uploaded.size,
+    formattedSize: formatBytes(uploaded.size),
+    type: uploaded.contentType,
+    createdAt: now,
+    updatedAt: now,
+    category,
+    url: uploaded.url,
+    pathname: uploaded.pathname,
+    storageProvider: 'vercel-blob',
+    width: prepared.width,
+    height: prepared.height,
   };
 
-  // 1. Put in-memory cache immediately
-  objectUrlCache.set(id, dataUrl);
-
-  // 2. Save compressed payload to Local IndexedDB for instant offline access (no multi-MB raw blob bloat)
-  await saveToLocalIndexedDB(mediaItem);
-
-  // 3. Sync to Cloud Firestore so all other devices & guests' phones can load it
   if (isFirebaseConfigured && db) {
     const cloudMediaRef = doc(db, 'invitations', INVITATION_ID, 'media', id);
-    const payload = {
-      id,
-      name: fileName,
-      size: mediaItem.size,
-      formattedSize: mediaItem.formattedSize,
-      type: mimeType,
-      createdAt: mediaItem.createdAt,
-      category: mediaItem.category,
-      url: virtualUrl,
-      dataUrl,
-      thumbnailUrl,
-      width,
-      height,
-    };
-
     try {
-      await setDoc(cloudMediaRef, payload);
-      console.info(`[MediaStorage] Uploaded & synced ${fileName} (${mediaItem.formattedSize}) to Cloud Firestore!`);
-    } catch (firstErr) {
-      console.warn('[MediaStorage] First cloud sync attempt failed, retrying...', firstErr);
-      try {
-        await setDoc(cloudMediaRef, payload);
-      } catch (retryErr) {
-        console.error('[MediaStorage] Cloud Firestore media sync failed:', retryErr);
-        throw new Error('Foto tersimpan di perangkat ini, namun gagal disinkronkan ke Cloud Database. Periksa koneksi internet Anda.');
-      }
+      await setDoc(cloudMediaRef, mediaItem);
+    } catch (err) {
+      console.error('[MediaStorage] Failed saving metadata to Firestore, rolling back blob:', err);
+      await deleteFromVercelBlobEndpoint(uploaded.url, options.authToken).catch(() => {});
+      throw new MediaStorageError(
+        'UPLOAD_FAILED',
+        'Foto berhasil dikirim, namun gagal menyimpan metadata ke Firebase Firestore.'
+      );
     }
+  } else {
+    await deleteFromVercelBlobEndpoint(uploaded.url, options.authToken).catch(() => {});
+    throw new MediaStorageError('CONFIG_ERROR', 'Firebase Firestore belum terkonfigurasi.');
   }
 
   return mediaItem;
 }
 
 /**
- * Get all media items from Cloud Firestore + Local IndexedDB (used in Admin Media Library)
+ * Replace an existing media item: uploads new photo to Vercel Blob, updates Firestore metadata,
+ * and deletes the replaced Vercel Blob file safely.
+ */
+export async function replaceMediaFile(
+  existingItem: MediaItem,
+  newFile: File | Blob,
+  options: {
+    authToken: string;
+    category?: string;
+  }
+): Promise<{ item: MediaItem; previousUrl: string }> {
+  const { mimeType, fileName } = validateMediaFile(newFile);
+  const category = options.category || existingItem.category || 'general';
+
+  const prepared = await prepareBlobForTransfer(newFile, mimeType);
+  const uploaded = await uploadToVercelBlobEndpoint(
+    prepared.blob,
+    prepared.mimeType,
+    fileName,
+    category,
+    options.authToken
+  );
+
+  const now = new Date().toISOString();
+  const updatedItem: MediaItem = {
+    id: existingItem.id,
+    name: uploaded.name || fileName,
+    size: uploaded.size,
+    formattedSize: formatBytes(uploaded.size),
+    type: uploaded.contentType,
+    createdAt: existingItem.createdAt || now,
+    updatedAt: now,
+    category,
+    url: uploaded.url,
+    pathname: uploaded.pathname,
+    storageProvider: 'vercel-blob',
+    width: prepared.width,
+    height: prepared.height,
+  };
+
+  if (isFirebaseConfigured && db) {
+    const cloudMediaRef = doc(db, 'invitations', INVITATION_ID, 'media', existingItem.id);
+    try {
+      await setDoc(cloudMediaRef, updatedItem);
+    } catch (err) {
+      console.error('[MediaStorage] Failed updating metadata in Firestore, rolling back new blob:', err);
+      await deleteFromVercelBlobEndpoint(uploaded.url, options.authToken).catch(() => {});
+      throw new MediaStorageError(
+        'UPLOAD_FAILED',
+        'Gagal memperbarui metadata foto di Firebase Firestore.'
+      );
+    }
+  }
+
+  if (isVercelBlobUrl(existingItem.url) && existingItem.url !== uploaded.url) {
+    await deleteFromVercelBlobEndpoint(existingItem.url, options.authToken).catch((err) => {
+      console.warn('[MediaStorage] Old blob cleanup note:', err);
+    });
+  }
+
+  return {
+    item: updatedItem,
+    previousUrl: existingItem.url,
+  };
+}
+
+/**
+ * Get all media items from Cloud Firestore (no LocalStorage / IndexedDB)
  */
 export async function getAllMediaItems(): Promise<MediaItem[]> {
   if (inFlightAllRequest) {
@@ -334,58 +481,22 @@ export async function getAllMediaItems(): Promise<MediaItem[]> {
   }
 
   inFlightAllRequest = (async () => {
-    const mergedMap = new Map<string, MediaItem>();
+    const items: MediaItem[] = [];
 
-    // 1. Read from Local IndexedDB
-    try {
-      const localDb = await openDB();
-      const localItems = await new Promise<MediaItem[]>((resolve, reject) => {
-        const tx = localDb.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const req = store.getAll();
-        req.onsuccess = () => resolve((req.result || []) as MediaItem[]);
-        req.onerror = () => reject(req.error);
-      });
-
-      localItems.forEach((item) => {
-        mergedMap.set(item.id, item);
-        if (item.dataUrl) {
-          objectUrlCache.set(item.id, item.dataUrl);
-        } else if (item.blob && !objectUrlCache.has(item.id)) {
-          try {
-            const url = URL.createObjectURL(item.blob);
-            objectUrlCache.set(item.id, url);
-          } catch {
-            // ignore
+    if (isFirebaseConfigured && db) {
+      const mediaCollection = collection(db, 'invitations', INVITATION_ID, 'media');
+      const snapshot = await getDocs(mediaCollection);
+      snapshot.forEach((docSnap) => {
+        const cloudData = docSnap.data() as MediaItem;
+        if (cloudData && cloudData.id && cloudData.url) {
+          items.push(cloudData);
+          if (cloudData.url.startsWith('idb://') && cloudData.dataUrl) {
+            legacyUrlCache.set(cloudData.id, cloudData.dataUrl);
           }
         }
       });
-    } catch (e) {
-      console.warn('[MediaStorage] Local media read warning:', e);
     }
 
-    // 2. Read from Cloud Firestore (brings media uploaded from other devices)
-    if (isFirebaseConfigured && db) {
-      try {
-        const mediaCollection = collection(db, 'invitations', INVITATION_ID, 'media');
-        const snapshot = await getDocs(mediaCollection);
-        snapshot.forEach((docSnap) => {
-          const cloudData = docSnap.data() as MediaItem;
-          if (cloudData && cloudData.id) {
-            mergedMap.set(cloudData.id, cloudData);
-            if (cloudData.dataUrl) {
-              objectUrlCache.set(cloudData.id, cloudData.dataUrl);
-            }
-            // Persist cloud items locally for fast subsequent visits
-            saveToLocalIndexedDB(cloudData);
-          }
-        });
-      } catch (cloudErr) {
-        console.warn('[MediaStorage] Cloud media read error:', cloudErr);
-      }
-    }
-
-    const items = Array.from(mergedMap.values());
     items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return items;
   })();
@@ -398,12 +509,124 @@ export async function getAllMediaItems(): Promise<MediaItem[]> {
 }
 
 /**
- * Get single media item by ID with in-flight deduplication and automatic local caching
+ * Delete a media item from Vercel Blob (server-side) and Cloud Firestore
+ */
+export async function deleteMediaItem(
+  itemOrId: MediaItem | string,
+  authToken?: string
+): Promise<void> {
+  const item =
+    typeof itemOrId === 'string'
+      ? await getMediaItem(itemOrId)
+      : itemOrId;
+
+  const id = typeof itemOrId === 'string' ? itemOrId : itemOrId.id;
+
+  if (item?.url && isVercelBlobUrl(item.url)) {
+    await deleteFromVercelBlobEndpoint(item.url, authToken || '');
+  }
+
+  legacyUrlCache.delete(id);
+
+  if (isFirebaseConfigured && db) {
+    const cloudRef = doc(db, 'invitations', INVITATION_ID, 'media', id);
+    await deleteDoc(cloudRef);
+  }
+}
+
+/**
+ * Find all places on the invitation website where a given photo URL is actively referenced
+ */
+export function findMediaReferences(
+  url: string,
+  content?: ContentConfig | null,
+  settings?: SettingsConfig | null
+): string[] {
+  if (!url || !content) return [];
+  const usedIn: string[] = [];
+
+  if (content.hero?.heroImageUrl === url || content.hero?.heroImage === url) {
+    usedIn.push('Foto Cover Hero');
+  }
+  if (content.couple?.groom?.photoUrl === url || content.couple?.groom?.image === url) {
+    usedIn.push('Foto Mempelai Pria');
+  }
+  if (content.couple?.bride?.photoUrl === url || content.couple?.bride?.image === url) {
+    usedIn.push('Foto Mempelai Wanita');
+  }
+  if (Array.isArray(content.gallery?.images) && content.gallery.images.some((img) => img.url === url)) {
+    usedIn.push('Galeri Undangan');
+  }
+  if (settings?.ogImage === url || settings?.seo?.ogImageUrl === url) {
+    usedIn.push('Thumbnail SEO (OG Image)');
+  }
+
+  return usedIn;
+}
+
+/**
+ * Replace all references of oldUrl with newUrl inside ContentConfig without leaving broken links
+ */
+export function replaceMediaUrlInContent(
+  content: ContentConfig,
+  oldUrl: string,
+  newUrl: string
+): { updatedContent: ContentConfig; didChange: boolean } {
+  if (!oldUrl || !newUrl || oldUrl === newUrl) {
+    return { updatedContent: content, didChange: false };
+  }
+
+  let didChange = false;
+  const next: ContentConfig = {
+    ...content,
+    hero: { ...content.hero },
+    couple: {
+      ...content.couple,
+      groom: { ...content.couple.groom },
+      bride: { ...content.couple.bride },
+    },
+    gallery: {
+      ...content.gallery,
+      images: [...content.gallery.images],
+    },
+  };
+
+  if (next.hero.heroImageUrl === oldUrl || next.hero.heroImage === oldUrl) {
+    next.hero.heroImageUrl = newUrl;
+    next.hero.heroImage = newUrl;
+    didChange = true;
+  }
+
+  if (next.couple.groom.photoUrl === oldUrl || next.couple.groom.image === oldUrl) {
+    next.couple.groom.photoUrl = newUrl;
+    next.couple.groom.image = newUrl;
+    didChange = true;
+  }
+
+  if (next.couple.bride.photoUrl === oldUrl || next.couple.bride.image === oldUrl) {
+    next.couple.bride.photoUrl = newUrl;
+    next.couple.bride.image = newUrl;
+    didChange = true;
+  }
+
+  let galleryChanged = false;
+  next.gallery.images = next.gallery.images.map((img) => {
+    if (img.url === oldUrl) {
+      galleryChanged = true;
+      return { ...img, url: newUrl };
+    }
+    return img;
+  });
+  if (galleryChanged) didChange = true;
+
+  return { updatedContent: next, didChange };
+}
+
+/**
+ * Read single media item from Cloud Firestore (used primarily for legacy idb:// compatibility)
  */
 export async function getMediaItem(id: string): Promise<MediaItem | null> {
-  // 1. Try in-memory cache synchronously
-  if (objectUrlCache.has(id)) {
-    const cachedUrl = objectUrlCache.get(id)!;
+  if (legacyUrlCache.has(id)) {
     return {
       id,
       name: id,
@@ -412,47 +635,16 @@ export async function getMediaItem(id: string): Promise<MediaItem | null> {
       type: 'image/webp',
       createdAt: new Date().toISOString(),
       url: `idb://${id}`,
-      dataUrl: cachedUrl,
+      dataUrl: legacyUrlCache.get(id),
     };
   }
 
-  // 2. Deduplicate concurrent requests for the exact same ID
   const existingRequest = inFlightItemRequests.get(id);
   if (existingRequest) {
     return existingRequest;
   }
 
   const fetchPromise = (async (): Promise<MediaItem | null> => {
-    // 2a. Try Local IndexedDB
-    try {
-      const localDb = await openDB();
-      const item = await new Promise<MediaItem | null>((resolve, reject) => {
-        const tx = localDb.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const req = store.get(id);
-        req.onsuccess = () => resolve((req.result as MediaItem) || null);
-        req.onerror = () => reject(req.error);
-      });
-
-      if (item) {
-        if (item.dataUrl) {
-          objectUrlCache.set(item.id, item.dataUrl);
-          return item;
-        } else if (item.blob) {
-          try {
-            const url = URL.createObjectURL(item.blob);
-            objectUrlCache.set(item.id, url);
-            return item;
-          } catch {
-            // continue to cloud fallback if blob failed
-          }
-        }
-      }
-    } catch {
-      // continue to cloud check
-    }
-
-    // 2b. Fallback to Cloud Firestore for other devices
     if (isFirebaseConfigured && db) {
       try {
         const cloudRef = doc(db, 'invitations', INVITATION_ID, 'media', id);
@@ -460,17 +652,14 @@ export async function getMediaItem(id: string): Promise<MediaItem | null> {
         if (docSnap.exists()) {
           const cloudItem = docSnap.data() as MediaItem;
           if (cloudItem.dataUrl) {
-            objectUrlCache.set(id, cloudItem.dataUrl);
+            legacyUrlCache.set(id, cloudItem.dataUrl);
           }
-          // Save to remote device's local IndexedDB so all future visits load instantly from disk
-          saveToLocalIndexedDB(cloudItem);
           return cloudItem;
         }
       } catch (err) {
         console.warn('[MediaStorage] Cloud item fetch error:', err);
       }
     }
-
     return null;
   })();
 
@@ -482,136 +671,55 @@ export async function getMediaItem(id: string): Promise<MediaItem | null> {
   }
 }
 
-/**
- * Delete a media item from IndexedDB and Cloud Firestore
- */
-export async function deleteMediaItem(id: string): Promise<void> {
-  if (objectUrlCache.has(id)) {
-    const val = objectUrlCache.get(id);
-    if (val && val.startsWith('blob:')) {
-      try {
-        URL.revokeObjectURL(val);
-      } catch {
-        // ignore
-      }
-    }
-    objectUrlCache.delete(id);
-  }
-
-  try {
-    const localDb = await openDB();
-    await new Promise<void>((resolve, reject) => {
-      const tx = localDb.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).delete(id);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch (err) {
-    console.warn('[MediaStorage] Failed to delete from local DB:', err);
-  }
-
-  if (isFirebaseConfigured && db) {
-    try {
-      const cloudRef = doc(db, 'invitations', INVITATION_ID, 'media', id);
-      await deleteDoc(cloudRef);
-    } catch (err) {
-      console.warn('[MediaStorage] Failed to delete from cloud:', err);
-    }
-  }
-}
-
-/**
- * Synchronous resolver for cached image URLs
- */
 export function resolveImageUrlSync(url: string | undefined): string | null {
   if (!url) return '';
   if (!url.startsWith('idb://') && !url.startsWith('indexeddb://')) {
     return url;
   }
   const key = url.replace(/^(idb|indexeddb):\/\//, '');
-  return objectUrlCache.get(key) || null;
+  return legacyUrlCache.get(key) || null;
 }
 
-/**
- * Asynchronous resolver that seamlessly handles:
- * - Direct external links (e.g. Unsplash, ImgBB, CDN)
- * - Cached in-memory image
- * - Local IndexedDB
- * - Cloud Firestore synced images for remote devices
- */
 export async function resolveImageUrl(url: string | undefined): Promise<string> {
   if (!url) return '';
-
   if (!url.startsWith('idb://') && !url.startsWith('indexeddb://')) {
     return url;
   }
 
   const key = url.replace(/^(idb|indexeddb):\/\//, '');
-
-  // 1. In-memory Cache
-  if (objectUrlCache.has(key)) {
-    return objectUrlCache.get(key)!;
+  if (legacyUrlCache.has(key)) {
+    return legacyUrlCache.get(key)!;
   }
 
-  // 2. Fetch from IndexedDB / Cloud Firestore (deduplicated)
   const item = await getMediaItem(key);
-  if (item) {
-    if (item.dataUrl) {
-      objectUrlCache.set(key, item.dataUrl);
-      return item.dataUrl;
-    }
-    if (item.blob) {
-      try {
-        const objUrl = URL.createObjectURL(item.blob);
-        objectUrlCache.set(key, objUrl);
-        return objUrl;
-      } catch {
-        if (item.thumbnailUrl) return item.thumbnailUrl;
-      }
-    }
-    if (item.thumbnailUrl) {
-      return item.thumbnailUrl;
-    }
+  if (item?.dataUrl) {
+    legacyUrlCache.set(key, item.dataUrl);
+    return item.dataUrl;
   }
-
+  if (item?.url && !item.url.startsWith('idb://')) {
+    return item.url;
+  }
   return '';
 }
 
-/**
- * Targeted prefetch ONLY for specific idb:// URLs actually used in an invitation.
- * Fetches priority URLs first (e.g. Hero), then batches remaining URLs (max 3 concurrent)
- * so Firestore & mobile bandwidth are never congested by unused media library files.
- */
 export async function prefetchMediaIds(urls: (string | undefined | null)[]): Promise<void> {
-  const uniqueIds: string[] = [];
+  const legacyKeys: string[] = [];
   const seen = new Set<string>();
 
   for (const raw of urls) {
     if (!raw || (!raw.startsWith('idb://') && !raw.startsWith('indexeddb://'))) continue;
     const key = raw.replace(/^(idb|indexeddb):\/\//, '');
-    if (!seen.has(key) && !objectUrlCache.has(key)) {
+    if (!seen.has(key) && !legacyUrlCache.has(key)) {
       seen.add(key);
-      uniqueIds.push(key);
+      legacyKeys.push(key);
     }
   }
 
-  if (uniqueIds.length === 0) return;
+  if (legacyKeys.length === 0) return;
 
-  // Fetch in small batches of 3 to avoid saturating slow mobile connections
   const batchSize = 3;
-  for (let i = 0; i < uniqueIds.length; i += batchSize) {
-    const batch = uniqueIds.slice(i, i + batchSize);
+  for (let i = 0; i < legacyKeys.length; i += batchSize) {
+    const batch = legacyKeys.slice(i, i + batchSize);
     await Promise.all(batch.map((id) => getMediaItem(id).catch(() => null)));
-  }
-}
-
-/**
- * Preload all stored media items into memory (intended for Admin Dashboard only)
- */
-export async function preloadMediaCache(): Promise<void> {
-  try {
-    await getAllMediaItems();
-  } catch (err) {
-    console.warn('[MediaStorage] Preload error:', err);
   }
 }

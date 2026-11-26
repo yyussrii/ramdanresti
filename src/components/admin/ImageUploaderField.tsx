@@ -5,14 +5,21 @@ import {
   FolderOpen,
   Trash2,
   CheckCircle2,
-  HardDrive,
+  Cloud,
   Link,
   ChevronDown,
   ChevronUp,
   Loader2,
   AlertCircle,
 } from 'lucide-react';
-import { saveMediaFile, MediaItem } from '../../services/mediaStorageService';
+import {
+  saveMediaFile,
+  MediaItem,
+  MediaStorageError,
+  isVercelBlobUrl,
+  validateMediaFile,
+} from '../../services/mediaStorageService';
+import type { ContentConfig } from '../../types';
 import { SmartImage } from '../common/SmartImage';
 import { MediaPickerModal } from './MediaPickerModal';
 
@@ -24,6 +31,9 @@ interface ImageUploaderFieldProps {
   category?: 'couple' | 'hero' | 'gallery' | 'general';
   aspectRatio?: 'portrait' | 'square' | 'landscape' | 'wide';
   placeholderName?: string;
+  authToken?: string | null;
+  onAuthExpired?: (message?: string) => void;
+  content?: ContentConfig;
 }
 
 export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
@@ -33,7 +43,9 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
   onChange,
   category = 'general',
   aspectRatio = 'portrait',
-  placeholderName = 'Foto',
+  authToken,
+  onAuthExpired,
+  content,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -43,7 +55,7 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const isStoredInDatabase = value && (value.startsWith('idb://') || value.startsWith('indexeddb://'));
+  const isStoredInVercelBlob = isVercelBlobUrl(value);
 
   const getAspectClass = () => {
     switch (aspectRatio) {
@@ -62,22 +74,44 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
 
   const handleProcessFile = async (file: File) => {
     setUploadError(null);
-    if (!file.type.startsWith('image/') && !/\.(jpg|jpeg|png|webp)$/i.test(file.name)) {
-      setUploadError('Harap pilih file gambar dengan format JPG, JPEG, PNG, atau WEBP.');
+    try {
+      validateMediaFile(file);
+    } catch (err) {
+      setUploadError(
+        err instanceof Error
+          ? err.message
+          : 'Format atau ukuran foto tidak valid (JPG, JPEG, PNG, WebP maks. 5 MB).'
+      );
+      return;
+    }
+
+    if (!authToken) {
+      setUploadError('Sesi admin tidak ditemukan. Silakan masuk ulang untuk mengunggah foto.');
+      onAuthExpired?.('Sesi admin dibutuhkan untuk mengunggah foto.');
       return;
     }
 
     setIsUploading(true);
     try {
-      const mediaItem: MediaItem = await saveMediaFile(file, { category, name: file.name });
+      const mediaItem: MediaItem = await saveMediaFile(file, {
+        authToken,
+        category,
+        name: file.name,
+      });
       onChange(mediaItem.url);
 
-      // Flash success toast
       setSuccessToast(true);
       setTimeout(() => setSuccessToast(false), 3000);
     } catch (err) {
-      console.error('Failed to save uploaded image:', err);
-      setUploadError('Gagal mengunggah foto ke database. Silakan coba kembali.');
+      console.error('Failed to upload image to Vercel Blob:', err);
+      if (err instanceof MediaStorageError && err.code === 'UNAUTHORIZED') {
+        onAuthExpired?.(err.message);
+      }
+      setUploadError(
+        err instanceof Error
+          ? err.message
+          : 'Gagal mengunggah foto ke Vercel Blob. Silakan coba kembali.'
+      );
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) {
@@ -107,16 +141,16 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
   return (
     <div className="space-y-2">
       {/* Label Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <div>
           <label className="block text-xs font-semibold text-[#1F1D1B]">{label}</label>
           {sublabel && <p className="text-[11px] text-[#8C827A] font-light">{sublabel}</p>}
         </div>
 
-        {isStoredInDatabase && (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[10px] font-medium border border-emerald-200/60">
-            <HardDrive className="w-3 h-3 text-emerald-600" />
-            <span>Tersimpan di Cloud &amp; Database</span>
+        {isStoredInVercelBlob && (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[10px] font-medium border border-emerald-200/60 shrink-0">
+            <Cloud className="w-3 h-3 text-emerald-600" />
+            <span>Tersimpan Permanen (Vercel Blob)</span>
           </span>
         )}
       </div>
@@ -138,7 +172,7 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
         <input
           type="file"
           ref={fileInputRef}
-          accept="image/jpeg,image/png,image/webp,image/jpg"
+          accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
           onChange={handleFileSelect}
           className="hidden"
         />
@@ -147,14 +181,15 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
           <div className="py-8 flex flex-col items-center justify-center gap-2 text-center">
             <Loader2 className="w-7 h-7 animate-spin text-[#C5A059]" />
             <span className="text-xs font-medium text-[#1F1D1B]">
-              Mengompres &amp; Menyimpan foto ke Cloud Database...
+              Mengunggah foto ke Vercel Blob &amp; menyinkronkan ke Firestore...
             </span>
-            <span className="text-[10px] text-[#8C827A]">Otomatis dioptimasi agar langsung tampil di semua HP &amp; perangkat tamu</span>
+            <span className="text-[10px] text-[#8C827A]">
+              Foto akan langsung tersedia permanen untuk seluruh tamu tanpa deploy ulang
+            </span>
           </div>
         ) : value ? (
           /* Has Image State */
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-            {/* Image Thumbnail Preview */}
             <div
               className={`relative shrink-0 rounded-xl overflow-hidden border border-[#D6C7B2] shadow-xs bg-[#FAF8F5] ${getAspectClass()}`}
             >
@@ -166,7 +201,6 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
               />
             </div>
 
-            {/* Actions & Info */}
             <div className="flex-1 space-y-2.5 w-full">
               <div className="flex flex-wrap items-center gap-2">
                 <button
@@ -175,7 +209,7 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
                   className="px-3 py-1.5 rounded-lg bg-[#242220] hover:bg-[#34302C] text-white text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
                 >
                   <Upload className="w-3.5 h-3.5 text-[#C5A059]" />
-                  <span>Upload Foto Baru</span>
+                  <span>Ganti / Upload Baru</span>
                 </button>
 
                 <button
@@ -191,20 +225,22 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
                   type="button"
                   onClick={handleClear}
                   className="p-1.5 rounded-lg text-[#8C827A] hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer ml-auto"
-                  title="Hapus Foto"
+                  title="Lepaskan Foto dari Bagian Ini"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
 
               <p className="text-[11px] text-[#70675F] leading-snug">
-                {isStoredInDatabase ? (
+                {isStoredInVercelBlob ? (
                   <span className="text-emerald-700 font-medium flex items-center gap-1">
                     <CheckCircle2 className="w-3 h-3 text-emerald-600 inline shrink-0" />
-                    Foto tersimpan di Cloud Database &amp; cache lokal. Langsung tampil di perangkat lain.
+                    Foto tersimpan permanen di Vercel Blob CDN. Langsung tampil di semua perangkat &amp; browser.
                   </span>
                 ) : (
-                  <span>Tarik &amp; lepas file foto baru ke kotak ini untuk menggantinya langsung.</span>
+                  <span>
+                    Tarik &amp; lepas foto JPG/JPEG/PNG/WebP (maks. 5 MB) ke kotak ini untuk menggantinya.
+                  </span>
                 )}
               </p>
             </div>
@@ -220,10 +256,10 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
 
             <div>
               <p className="text-xs font-medium text-[#1F1D1B]">
-                Tarik &amp; Lepaskan Foto JPG / PNG ke Sini
+                Tarik &amp; Lepaskan Foto ke Sini
               </p>
               <p className="text-[11px] text-[#8C827A] mt-0.5 font-light">
-                Format didukung: JPG, PNG, WEBP &bull; Disimpan permanen di database
+                Format: JPG, JPEG, PNG, WebP &bull; Maksimal 5 MB &bull; Disimpan permanen di Vercel Blob
               </p>
             </div>
 
@@ -234,7 +270,7 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
                 className="px-3.5 py-1.5 rounded-lg bg-[#242220] hover:bg-[#34302C] text-white text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
               >
                 <Upload className="w-3.5 h-3.5 text-[#C5A059]" />
-                <span>Unggah JPG/PNG</span>
+                <span>Unggah Foto</span>
               </button>
 
               <button
@@ -253,7 +289,7 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
         {successToast && (
           <div className="absolute top-2 right-2 px-2.5 py-1 rounded-md bg-emerald-600 text-white text-[10px] font-medium shadow-md animate-fade-in flex items-center gap-1">
             <CheckCircle2 className="w-3 h-3" />
-            <span>Foto berhasil disimpan ke database!</span>
+            <span>Tersimpan permanen di Vercel Blob!</span>
           </div>
         )}
       </div>
@@ -278,7 +314,7 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
         </div>
       )}
 
-      {/* Optional URL Toggle (subtle fallback for external links) */}
+      {/* Optional URL Toggle */}
       <div className="pt-0.5">
         <button
           type="button"
@@ -296,7 +332,7 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
               type="text"
               value={value || ''}
               onChange={(e) => onChange(e.target.value)}
-              placeholder="https://images.unsplash.com/..."
+              placeholder="https://..."
               className="w-full px-3 py-1.5 text-xs bg-white border border-[#E8DFD3] rounded-lg focus:outline-none focus:border-[#C5A059]"
             />
           </div>
@@ -311,6 +347,9 @@ export const ImageUploaderField: React.FC<ImageUploaderFieldProps> = ({
         currentSelectedUrl={value}
         title={`Pilih ${label}`}
         category={category}
+        authToken={authToken}
+        onAuthExpired={onAuthExpired}
+        content={content}
       />
     </div>
   );

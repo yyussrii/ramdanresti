@@ -4,7 +4,7 @@ import {
   Plus,
   Trash2,
   Upload,
-  HardDrive,
+  Cloud,
   Check,
   Sparkles,
   User,
@@ -14,30 +14,46 @@ import {
   Loader2,
   Layers,
   AlertCircle,
+  RefreshCw,
+  Lock,
 } from 'lucide-react';
-import { ContentConfig } from '../../types';
+import { ContentConfig, SettingsConfig } from '../../types';
 import {
   MediaItem,
+  MediaStorageError,
   getAllMediaItems,
   saveMediaFile,
+  replaceMediaFile,
   deleteMediaItem,
+  validateMediaFile,
+  findMediaReferences,
+  replaceMediaUrlInContent,
+  isVercelBlobUrl,
 } from '../../services/mediaStorageService';
 import { SmartImage } from '../common/SmartImage';
 import { getOptimizedImageUrl } from '../../utils/imageOptimizer';
 
 interface MediaManagerProps {
   content: ContentConfig;
+  settings?: SettingsConfig;
   onChangeContent: (updatedContent: ContentConfig) => void;
+  authToken?: string | null;
+  onAuthExpired?: (message?: string) => void;
 }
 
 export const MediaManager: React.FC<MediaManagerProps> = ({
   content,
+  settings,
   onChangeContent,
+  authToken,
+  onAuthExpired,
 }) => {
   const [activeTab, setActiveTab] = useState<'database' | 'invitation-gallery' | 'presets'>('database');
   const [mediaList, setMediaList] = useState<MediaItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [replacingId, setReplacingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
@@ -45,8 +61,9 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const replaceInputRef = useRef<HTMLInputElement>(null);
+  const replaceTargetRef = useRef<MediaItem | null>(null);
 
-  // Curated Preset Wedding Photos
   const curatedStockPhotos = [
     {
       url: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=800&q=80',
@@ -87,6 +104,7 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
       setMediaList(items);
     } catch (e) {
       console.error('Failed to load media list:', e);
+      setErrorNotice('Gagal memuat daftar foto dari Cloud Firestore.');
     } finally {
       setIsLoading(false);
     }
@@ -98,32 +116,50 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
 
   const triggerNotice = (msg: string) => {
     setActionNotice(msg);
-    setTimeout(() => setActionNotice(null), 3500);
+    setTimeout(() => setActionNotice(null), 4000);
   };
 
   const handleFileUpload = async (files: FileList | File[]) => {
     setErrorNotice(null);
-    const validFiles = Array.from(files).filter(
-      (file) => file.type.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(file.name)
-    );
+    const fileArray = Array.from(files);
+    if (fileArray.length === 0) return;
 
-    if (validFiles.length === 0) {
-      setErrorNotice('Harap unggah file gambar berformat JPG, PNG, atau WEBP.');
+    try {
+      fileArray.forEach((file) => validateMediaFile(file));
+    } catch (err) {
+      setErrorNotice(
+        err instanceof Error
+          ? err.message
+          : 'Harap unggah file JPG, JPEG, PNG, atau WebP dengan ukuran maksimal 5 MB.'
+      );
+      return;
+    }
+
+    if (!authToken) {
+      setErrorNotice('Sesi admin dibutuhkan untuk mengunggah foto. Silakan login ulang.');
+      onAuthExpired?.('Sesi admin dibutuhkan untuk mengunggah foto.');
       return;
     }
 
     setIsUploading(true);
     try {
       let count = 0;
-      for (const file of validFiles) {
-        await saveMediaFile(file, { category: 'general' });
+      for (const file of fileArray) {
+        await saveMediaFile(file, { authToken, category: 'general' });
         count++;
       }
       await loadMedia();
-      triggerNotice(`${count} foto berhasil diunggah dan disinkronkan ke Cloud Database!`);
+      triggerNotice(`${count} foto berhasil diunggah permanen ke Vercel Blob & Firestore!`);
     } catch (err) {
-      console.error('Error saving media:', err);
-      setErrorNotice('Gagal menyimpan file ke database. Silakan coba kembali.');
+      console.error('Error uploading media:', err);
+      if (err instanceof MediaStorageError && err.code === 'UNAUTHORIZED') {
+        onAuthExpired?.(err.message);
+      }
+      setErrorNotice(
+        err instanceof Error
+          ? err.message
+          : 'Gagal mengunggah foto ke Vercel Blob. Silakan coba kembali.'
+      );
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) {
@@ -132,14 +168,110 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
     }
   };
 
-  const handleDeleteMedia = async (id: string) => {
+  const handleStartReplace = (item: MediaItem) => {
+    setErrorNotice(null);
+    replaceTargetRef.current = item;
+    replaceInputRef.current?.click();
+  };
+
+  const handleReplaceFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const targetItem = replaceTargetRef.current;
+    const newFile = e.target.files?.[0];
+    if (!targetItem || !newFile) return;
+
+    setErrorNotice(null);
     try {
-      await deleteMediaItem(id);
+      validateMediaFile(newFile);
+    } catch (err) {
+      setErrorNotice(
+        err instanceof Error
+          ? err.message
+          : 'Format atau ukuran foto pengganti tidak valid (maks. 5 MB).'
+      );
+      e.target.value = '';
+      return;
+    }
+
+    if (!authToken) {
+      setErrorNotice('Sesi admin dibutuhkan untuk mengganti foto. Silakan login ulang.');
+      onAuthExpired?.('Sesi admin kedaluwarsa. Silakan masuk kembali.');
+      e.target.value = '';
+      return;
+    }
+
+    setReplacingId(targetItem.id);
+    try {
+      const { item: updatedItem, previousUrl } = await replaceMediaFile(targetItem, newFile, {
+        authToken,
+        category: targetItem.category,
+      });
+
+      const { updatedContent, didChange } = replaceMediaUrlInContent(
+        content,
+        previousUrl,
+        updatedItem.url
+      );
+      if (didChange) {
+        onChangeContent(updatedContent);
+      }
+
+      await loadMedia();
+      triggerNotice(
+        didChange
+          ? '✓ Foto diganti di Vercel Blob dan seluruh bagian website otomatis diperbarui!'
+          : '✓ Foto berhasil diganti secara permanen di Vercel Blob!'
+      );
+    } catch (err) {
+      console.error('Error replacing media:', err);
+      if (err instanceof MediaStorageError && err.code === 'UNAUTHORIZED') {
+        onAuthExpired?.(err.message);
+      }
+      setErrorNotice(
+        err instanceof Error
+          ? err.message
+          : 'Gagal mengganti foto di Vercel Blob. Silakan coba kembali.'
+      );
+    } finally {
+      setReplacingId(null);
+      replaceTargetRef.current = null;
+      e.target.value = '';
+    }
+  };
+
+  const handleDeleteMedia = async (item: MediaItem) => {
+    setErrorNotice(null);
+    const activeRefs = findMediaReferences(item.url, content, settings);
+    if (activeRefs.length > 0) {
+      setConfirmDeleteId(null);
+      setErrorNotice(
+        `Foto "${item.name}" tidak dapat dihapus karena masih dipakai di: ${activeRefs.join(', ')}. Gunakan tombol "Ganti Foto" atau lepaskan penggunaannya terlebih dahulu agar website tidak rusak.`
+      );
+      return;
+    }
+
+    if (isVercelBlobUrl(item.url) && !authToken) {
+      setErrorNotice('Sesi admin dibutuhkan untuk menghapus foto dari Vercel Blob.');
+      onAuthExpired?.('Sesi admin kedaluwarsa. Silakan masuk kembali.');
+      return;
+    }
+
+    setDeletingId(item.id);
+    try {
+      await deleteMediaItem(item, authToken || undefined);
       setConfirmDeleteId(null);
       await loadMedia();
-      triggerNotice('Foto berhasil dihapus dari database.');
-    } catch {
-      setErrorNotice('Gagal menghapus foto dari database.');
+      triggerNotice('Foto berhasil dihapus permanen dari Vercel Blob & Firestore.');
+    } catch (err) {
+      if (err instanceof MediaStorageError && err.code === 'UNAUTHORIZED') {
+        onAuthExpired?.(err.message);
+      }
+      setErrorNotice(
+        err instanceof Error
+          ? err.message
+          : 'Gagal menghapus foto dari Vercel Blob & Firestore.'
+      );
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -190,7 +322,6 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
 
   // Add to Wedding Gallery Section
   const handleAddToInvitationGallery = (url: string, caption?: string) => {
-    // Check if already in gallery
     const exists = content.gallery.images.some((img) => img.url === url);
     if (exists) {
       triggerNotice('Foto ini sudah ada di Galeri Undangan.');
@@ -224,10 +355,9 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
         images: updated,
       },
     });
-    triggerNotice('Foto dihapus dari Galeri Undangan.');
+    triggerNotice('Foto dilepas dari Galeri Undangan (file di Media Library tetap aman).');
   };
 
-  // Determine usage tags for each media URL
   const currentHeroUrl = content.hero.heroImageUrl || content.hero.heroImage;
   const currentGroomUrl = content.couple.groom.photoUrl || content.couple.groom.image;
   const currentBrideUrl = content.couple.bride.photoUrl || content.couple.bride.image;
@@ -235,6 +365,15 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto pb-16 animate-fade-in">
+      {/* Hidden input for replacing an existing photo */}
+      <input
+        type="file"
+        ref={replaceInputRef}
+        accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+        onChange={handleReplaceFileSelected}
+        className="hidden"
+      />
+
       {/* Toast Notice */}
       {actionNotice && (
         <div className="fixed bottom-6 right-6 z-50 bg-[#242220] text-white px-4 py-2.5 rounded-xl shadow-xl border border-[#C5A059] flex items-center gap-2 text-xs animate-slide-up">
@@ -246,24 +385,26 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h3 className="font-serif text-2xl text-[#1F1D1B] font-medium flex items-center gap-2.5">
-            <span>Galeri Media &amp; Foto Database</span>
-            <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/60 font-sans font-medium">
-              Cloud Sync Aktif
+          <h3 className="font-serif text-2xl text-[#1F1D1B] font-medium flex flex-wrap items-center gap-2.5">
+            <span>Galeri Media &amp; Foto Permanen</span>
+            <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/60 font-sans font-medium inline-flex items-center gap-1">
+              <Cloud className="w-3 h-3" />
+              Vercel Blob + Firestore
             </span>
           </h3>
           <p className="text-xs text-[#8C827A] font-light mt-1">
-            Unggah foto JPG &amp; PNG. Foto otomatis dioptimasi dan disinkronkan ke Cloud Database sehingga langsung tampil di semua HP &amp; laptop tamu.
+            Unggah foto JPG, JPEG, PNG, atau WebP (maks. 5 MB). Foto tersimpan permanen di Vercel Blob CDN dan langsung tampil di seluruh HP &amp; browser tanpa deploy ulang.
           </p>
         </div>
 
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="px-4 py-2 rounded-xl bg-[#242220] hover:bg-[#34302C] text-white text-xs font-medium transition-colors flex items-center gap-2 shrink-0 cursor-pointer shadow-xs"
+          disabled={isUploading}
+          className="px-4 py-2 rounded-xl bg-[#242220] hover:bg-[#34302C] disabled:opacity-60 text-white text-xs font-medium transition-colors flex items-center gap-2 shrink-0 cursor-pointer shadow-xs"
         >
           <Upload className="w-3.5 h-3.5 text-[#C5A059]" />
-          <span>Upload Foto (JPG/PNG)</span>
+          <span>{isUploading ? 'Mengunggah...' : 'Upload Foto Baru'}</span>
         </button>
       </div>
 
@@ -280,7 +421,7 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
           <button
             type="button"
             onClick={() => setErrorNotice(null)}
-            className="text-red-600 hover:text-red-800 font-semibold cursor-pointer"
+            className="text-red-600 hover:text-red-800 font-semibold cursor-pointer shrink-0"
           >
             Tutup
           </button>
@@ -301,7 +442,7 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
             handleFileUpload(e.dataTransfer.files);
           }
         }}
-        onClick={() => fileInputRef.current?.click()}
+        onClick={() => !isUploading && fileInputRef.current?.click()}
         className={`rounded-2xl p-8 text-center transition-all cursor-pointer border-2 border-dashed shadow-xs ${
           isDragging
             ? 'border-[#C5A059] bg-[#C5A059]/10 scale-[1.008]'
@@ -311,7 +452,7 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
         <input
           type="file"
           ref={fileInputRef}
-          accept="image/jpeg,image/png,image/webp,image/jpg"
+          accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
           multiple
           onChange={(e) => {
             if (e.target.files) handleFileUpload(e.target.files);
@@ -323,10 +464,10 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
           <div className="py-6 flex flex-col items-center gap-3">
             <Loader2 className="w-8 h-8 animate-spin text-[#C5A059]" />
             <p className="text-xs font-medium text-[#1F1D1B]">
-              Mengompres ke WebP &amp; menyinkronkan foto ke Cloud Database...
+              Mengunggah foto permanen ke Vercel Blob &amp; menyimpan metadata ke Firestore...
             </p>
             <p className="text-[10px] text-[#8C827A]">
-              Agar cepat terbuka dan langsung tampil di semua HP &amp; laptop tamu
+              Mohon tunggu hingga proses selesai
             </p>
           </div>
         ) : (
@@ -336,7 +477,7 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
             </div>
             <div>
               <h4 className="font-serif text-base font-medium text-[#1F1D1B]">
-                Tarik &amp; Lepaskan Foto JPG / PNG ke Sini
+                Tarik &amp; Lepaskan Foto ke Sini
               </h4>
               <p className="text-xs text-[#8C827A] font-light mt-1">
                 atau <span className="text-[#C5A059] font-medium underline">klik untuk memilih file</span> dari laptop/HP Anda
@@ -344,11 +485,11 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
             </div>
             <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#FAF8F5] border border-[#E8DFD3] text-[10px] text-[#70675F]">
-                <HardDrive className="w-3 h-3 text-emerald-600" />
-                <span>Otomatis Kompresi WebP + Cloud Sync</span>
+                <Cloud className="w-3 h-3 text-emerald-600" />
+                <span>Hosting Permanen Vercel Blob + Metadata Firestore</span>
               </span>
               <span className="px-3 py-1 rounded-full bg-[#FAF8F5] border border-[#E8DFD3] text-[10px] text-[#70675F]">
-                Format: .JPG, .JPEG, .PNG, .WEBP
+                Format: JPG, JPEG, PNG, WebP &bull; Maks. 5 MB/foto
               </span>
             </div>
           </div>
@@ -358,6 +499,7 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
       {/* Tabs */}
       <div className="border-b border-[#EFE8DC] flex gap-6 bg-transparent">
         <button
+          type="button"
           onClick={() => setActiveTab('database')}
           className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
             activeTab === 'database'
@@ -365,11 +507,12 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
               : 'border-transparent text-[#8C827A] hover:text-[#242220]'
           }`}
         >
-          <HardDrive className="w-3.5 h-3.5" />
-          <span>Foto di Database ({mediaList.length})</span>
+          <Cloud className="w-3.5 h-3.5" />
+          <span>Koleksi Media Cloud ({mediaList.length})</span>
         </button>
 
         <button
+          type="button"
           onClick={() => setActiveTab('invitation-gallery')}
           className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
             activeTab === 'invitation-gallery'
@@ -382,6 +525,7 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
         </button>
 
         <button
+          type="button"
           onClick={() => setActiveTab('presets')}
           className={`pb-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
             activeTab === 'presets'
@@ -394,13 +538,13 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
         </button>
       </div>
 
-      {/* TAB 1: DATABASE MEDIA */}
+      {/* TAB 1: CLOUD MEDIA LIBRARY */}
       {activeTab === 'database' && (
         <div className="space-y-4">
           {isLoading ? (
             <div className="py-20 text-center flex flex-col items-center justify-center text-[#8C827A] gap-2">
               <Loader2 className="w-6 h-6 animate-spin text-[#C5A059]" />
-              <span className="text-xs">Memuat galeri foto dari database browser...</span>
+              <span className="text-xs">Memuat galeri foto dari Cloud Firestore...</span>
             </div>
           ) : mediaList.length === 0 ? (
             <div className="bg-white rounded-2xl p-12 text-center border border-[#EFE8DC] space-y-3">
@@ -408,11 +552,10 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                 <ImageIcon className="w-6 h-6" />
               </div>
               <h4 className="font-serif text-lg text-[#1F1D1B] font-medium">
-                Belum Ada Foto di Database
+                Belum Ada Foto Tersimpan
               </h4>
               <p className="text-xs text-[#8C827A] font-light max-w-md mx-auto">
-                Silakan tarik &amp; lepas file foto JPG/PNG Anda di area kotak di atas, atau klik tombol
-                "Upload Foto (JPG/PNG)".
+                Silakan tarik &amp; lepas file foto JPG/JPEG/PNG/WebP (maks. 5 MB) di area kotak di atas, atau klik tombol "Upload Foto Baru".
               </p>
             </div>
           ) : (
@@ -422,6 +565,10 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                 const isGroom = currentGroomUrl === item.url;
                 const isBride = currentBrideUrl === item.url;
                 const inGallery = galleryUrls.has(item.url);
+                const activeRefs = findMediaReferences(item.url, content, settings);
+                const isInUse = activeRefs.length > 0;
+                const isBeingReplaced = replacingId === item.id;
+                const isBeingDeleted = deletingId === item.id;
 
                 return (
                   <div
@@ -431,10 +578,18 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                     {/* Image Preview Box */}
                     <div className="relative aspect-4/3 bg-[#FAF8F5] overflow-hidden group">
                       <SmartImage
-                        src={item.thumbnailUrl || item.url}
+                        src={item.url}
                         alt={item.name}
+                        optimizeWidth={600}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
+
+                      {isBeingReplaced && (
+                        <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center gap-2 text-white">
+                          <Loader2 className="w-6 h-6 animate-spin text-[#C5A059]" />
+                          <span className="text-xs font-medium">Mengganti foto di Vercel Blob...</span>
+                        </div>
+                      )}
 
                       {/* Top Badges */}
                       <div className="absolute top-2 left-2 flex flex-wrap gap-1">
@@ -462,20 +617,22 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
 
                       {/* Quick Overlay Action */}
                       {confirmDeleteId === item.id ? (
-                        <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center gap-2 p-3 text-center">
+                        <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-2 p-3 text-center">
                           <span className="text-[11px] font-medium text-white">
-                            Hapus foto ini permanen?
+                            Hapus foto ini permanen dari Vercel Blob?
                           </span>
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
-                              onClick={() => handleDeleteMedia(item.id)}
-                              className="px-3 py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white text-[11px] font-semibold cursor-pointer"
+                              disabled={isBeingDeleted}
+                              onClick={() => handleDeleteMedia(item)}
+                              className="px-3 py-1 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-[11px] font-semibold cursor-pointer"
                             >
-                              Ya, Hapus
+                              {isBeingDeleted ? 'Menghapus...' : 'Ya, Hapus'}
                             </button>
                             <button
                               type="button"
+                              disabled={isBeingDeleted}
                               onClick={() => setConfirmDeleteId(null)}
                               className="px-3 py-1 rounded-lg bg-white/90 hover:bg-white text-[#242220] text-[11px] font-medium cursor-pointer"
                             >
@@ -484,35 +641,65 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
                           </div>
                         </div>
                       ) : (
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                        <div className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 px-2">
                           <button
                             type="button"
                             onClick={() => setLightboxImage(item.url)}
-                            className="p-2 rounded-xl bg-white/90 text-[#242220] hover:bg-white text-xs font-medium flex items-center gap-1 shadow-sm cursor-pointer"
+                            className="p-2 rounded-xl bg-white/95 text-[#242220] hover:bg-white text-[11px] font-medium flex items-center gap-1 shadow-sm cursor-pointer"
                           >
                             <Eye className="w-3.5 h-3.5" />
-                            <span>Perbesar</span>
+                            <span>Lihat</span>
                           </button>
+
                           <button
                             type="button"
-                            onClick={() => setConfirmDeleteId(item.id)}
-                            className="p-2 rounded-xl bg-red-600/90 text-white hover:bg-red-600 text-xs font-medium shadow-sm cursor-pointer"
-                            title="Hapus dari database"
+                            onClick={() => handleStartReplace(item)}
+                            className="p-2 rounded-xl bg-[#C5A059] text-[#1E1C1A] hover:bg-[#D4AF37] text-[11px] font-semibold flex items-center gap-1 shadow-sm cursor-pointer"
+                            title="Ganti file foto ini (otomatis memperbarui referensi website)"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            <span>Ganti</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (isInUse) {
+                                setErrorNotice(
+                                  `Foto "${item.name}" masih aktif digunakan di: ${activeRefs.join(', ')}. Gunakan tombol "Ganti" atau lepaskan dari bagian tersebut terlebih dahulu.`
+                                );
+                              } else {
+                                setConfirmDeleteId(item.id);
+                              }
+                            }}
+                            className={`p-2 rounded-xl text-xs font-medium shadow-sm cursor-pointer ${
+                              isInUse
+                                ? 'bg-neutral-700/90 text-neutral-200 hover:bg-neutral-700'
+                                : 'bg-red-600/95 text-white hover:bg-red-600'
+                            }`}
+                            title={
+                              isInUse
+                                ? `Dilindungi: masih dipakai di ${activeRefs.join(', ')}`
+                                : 'Hapus permanen dari Vercel Blob & Firestore'
+                            }
+                          >
+                            {isInUse ? <Lock className="w-3.5 h-3.5" /> : <Trash2 className="w-3.5 h-3.5" />}
                           </button>
                         </div>
                       )}
                     </div>
 
                     {/* Metadata */}
-                    <div className="p-3.5 border-b border-[#F0EAE1] bg-[#FAF8F5]/40 flex items-center justify-between">
-                      <div className="min-w-0 pr-2">
+                    <div className="p-3.5 border-b border-[#F0EAE1] bg-[#FAF8F5]/40 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
                         <p className="text-xs font-medium text-[#1F1D1B] truncate" title={item.name}>
                           {item.name}
                         </p>
                         <p className="text-[10px] text-[#8C827A] mt-0.5">
-                          {item.formattedSize} &bull; {new Date(item.createdAt).toLocaleDateString('id-ID')}
+                          {item.formattedSize}
+                          {item.width && item.height ? ` • ${item.width}×${item.height}` : ''}
+                          {' • '}
+                          {new Date(item.createdAt).toLocaleDateString('id-ID')}
                         </p>
                       </div>
                       <span className="px-2 py-0.5 rounded bg-white text-[9px] text-[#70675F] border border-[#E8DFD3] shrink-0">
@@ -522,9 +709,20 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
 
                     {/* Action Integration Buttons */}
                     <div className="p-3 bg-white space-y-1.5 mt-auto">
-                      <p className="text-[10px] uppercase tracking-wider text-[#8C827A] font-semibold mb-1">
-                        Gunakan Foto Untuk:
-                      </p>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-[10px] uppercase tracking-wider text-[#8C827A] font-semibold">
+                          Gunakan Foto Untuk:
+                        </p>
+                        {isInUse && (
+                          <span
+                            className="text-[9px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded flex items-center gap-1"
+                            title={`Dipakai di: ${activeRefs.join(', ')}`}
+                          >
+                            <Lock className="w-2.5 h-2.5" />
+                            <span>Terpakai</span>
+                          </span>
+                        )}
+                      </div>
 
                       <div className="grid grid-cols-2 gap-1.5">
                         <button
@@ -604,60 +802,59 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
 
           {content.gallery.images.length === 0 ? (
             <div className="p-12 text-center text-xs text-[#8C827A] font-light bg-white rounded-2xl border border-[#EFE8DC]">
-              Belum ada foto yang dimasukkan ke galeri undangan. Pilih foto dari tab "Foto di Database"
+              Belum ada foto yang dimasukkan ke galeri undangan. Pilih foto dari tab "Koleksi Media Cloud"
               lalu klik "+ Galeri".
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-              {content.gallery.images.map((img, index) => {
-                return (
-                  <div
-                    key={index}
-                    className="group relative rounded-xl overflow-hidden border border-[#E8DFD3] bg-[#FAF8F5] shadow-xs flex flex-col"
-                  >
-                    <div className="h-44 relative overflow-hidden">
-                      <SmartImage
-                        src={img.url}
-                        alt={img.caption || `Foto #${index + 1}`}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveFromGallery(index)}
-                        title="Hapus dari Galeri"
-                        className="absolute top-2 right-2 p-1.5 rounded-lg bg-red-600/90 hover:bg-red-600 text-white cursor-pointer shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-
-                    <div className="p-2.5 bg-white border-t border-[#F0EAE1]">
-                      <input
-                        type="text"
-                        defaultValue={img.caption || ''}
-                        onBlur={(e) => {
-                          const val = e.target.value;
-                          if (val !== (img.caption || '')) {
-                            const updated = [...content.gallery.images];
-                            updated[index] = { ...updated[index], caption: val };
-                            onChangeContent({
-                              ...content,
-                              gallery: { ...content.gallery, images: updated },
-                            });
-                          }
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            (e.target as HTMLInputElement).blur();
-                          }
-                        }}
-                        placeholder="Tulis caption foto..."
-                        className="w-full text-xs text-[#242220] bg-transparent border-b border-transparent focus:border-[#C5A059] focus:outline-none"
-                      />
-                    </div>
+              {content.gallery.images.map((img, index) => (
+                <div
+                  key={`${img.url}-${index}`}
+                  className="group relative rounded-xl overflow-hidden border border-[#E8DFD3] bg-[#FAF8F5] shadow-xs flex flex-col"
+                >
+                  <div className="h-44 relative overflow-hidden">
+                    <SmartImage
+                      src={img.url}
+                      alt={img.caption || `Foto #${index + 1}`}
+                      optimizeWidth={500}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveFromGallery(index)}
+                      title="Lepaskan dari Galeri Undangan"
+                      className="absolute top-2 right-2 p-1.5 rounded-lg bg-red-600/90 hover:bg-red-600 text-white cursor-pointer shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
-                );
-              })}
+
+                  <div className="p-2.5 bg-white border-t border-[#F0EAE1]">
+                    <input
+                      type="text"
+                      defaultValue={img.caption || ''}
+                      onBlur={(e) => {
+                        const val = e.target.value;
+                        if (val !== (img.caption || '')) {
+                          const updated = [...content.gallery.images];
+                          updated[index] = { ...updated[index], caption: val };
+                          onChangeContent({
+                            ...content,
+                            gallery: { ...content.gallery, images: updated },
+                          });
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          (e.target as HTMLInputElement).blur();
+                        }
+                      }}
+                      placeholder="Tulis caption foto..."
+                      className="w-full text-xs text-[#242220] bg-transparent border-b border-transparent focus:border-[#C5A059] focus:outline-none"
+                    />
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -722,8 +919,9 @@ export const MediaManager: React.FC<MediaManagerProps> = ({
               className="max-w-full max-h-[85vh] object-contain rounded-2xl"
             />
             <button
+              type="button"
               onClick={() => setLightboxImage(null)}
-              className="absolute top-3 right-3 p-2 rounded-full bg-black/60 text-white hover:bg-black transition-colors"
+              className="absolute top-3 right-3 p-2 rounded-full bg-black/60 text-white hover:bg-black transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>

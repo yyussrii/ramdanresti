@@ -7,16 +7,21 @@ import {
   Trash2,
   Sparkles,
   Loader2,
-  HardDrive,
+  Cloud,
   FolderOpen,
   AlertCircle,
+  Lock,
 } from 'lucide-react';
 import {
   MediaItem,
+  MediaStorageError,
   getAllMediaItems,
   saveMediaFile,
   deleteMediaItem,
+  validateMediaFile,
+  findMediaReferences,
 } from '../../services/mediaStorageService';
+import type { ContentConfig } from '../../types';
 import { SmartImage } from '../common/SmartImage';
 import { getOptimizedImageUrl } from '../../utils/imageOptimizer';
 
@@ -27,6 +32,9 @@ interface MediaPickerModalProps {
   currentSelectedUrl?: string;
   title?: string;
   category?: 'couple' | 'hero' | 'gallery' | 'general';
+  authToken?: string | null;
+  onAuthExpired?: (message?: string) => void;
+  content?: ContentConfig;
 }
 
 export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
@@ -36,18 +44,21 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
   currentSelectedUrl,
   title = 'Pilih dari Galeri Media',
   category = 'general',
+  authToken,
+  onAuthExpired,
+  content,
 }) => {
   const [activeTab, setActiveTab] = useState<'my-media' | 'upload' | 'curated'>('my-media');
   const [mediaList, setMediaList] = useState<MediaItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Curated stock photos for inspiration
   const curatedStock = [
     {
       url: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?q=80&w=800&auto=format&fit=crop',
@@ -88,6 +99,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
       setMediaList(items);
     } catch (e) {
       console.error('Failed to load media items', e);
+      setErrorNotice('Gagal memuat daftar foto dari Firestore.');
     } finally {
       setLoading(false);
     }
@@ -95,6 +107,8 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
+      setErrorNotice(null);
+      setConfirmDeleteId(null);
       loadMedia();
     }
   }, [isOpen]);
@@ -103,33 +117,50 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
 
   const handleFileUpload = async (files: FileList | File[]) => {
     setErrorNotice(null);
-    const validFiles = Array.from(files).filter((file) =>
-      file.type.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(file.name)
-    );
+    const fileArray = Array.from(files);
+    if (fileArray.length === 0) return;
 
-    if (validFiles.length === 0) {
-      setErrorNotice('Harap unggah file foto dengan format JPG, PNG, atau WEBP.');
+    try {
+      fileArray.forEach((f) => validateMediaFile(f));
+    } catch (err) {
+      setErrorNotice(
+        err instanceof Error
+          ? err.message
+          : 'Harap unggah foto JPG, JPEG, PNG, atau WebP maksimal 5 MB.'
+      );
+      return;
+    }
+
+    if (!authToken) {
+      setErrorNotice('Sesi admin dibutuhkan untuk mengunggah foto. Silakan login ulang.');
+      onAuthExpired?.('Sesi admin dibutuhkan untuk mengunggah foto.');
       return;
     }
 
     setIsUploading(true);
     try {
       let lastItem: MediaItem | null = null;
-      for (const file of validFiles) {
-        const item = await saveMediaFile(file, { category });
+      for (const file of fileArray) {
+        const item = await saveMediaFile(file, { authToken, category });
         lastItem = item;
       }
       await loadMedia();
       setActiveTab('my-media');
 
-      // If user uploaded a single image, automatically select it!
-      if (validFiles.length === 1 && lastItem) {
+      if (fileArray.length === 1 && lastItem) {
         onSelectImage(lastItem.url, lastItem);
         onClose();
       }
     } catch (err) {
       console.error('Upload failed:', err);
-      setErrorNotice('Gagal mengunggah foto ke database. Silakan coba kembali.');
+      if (err instanceof MediaStorageError && err.code === 'UNAUTHORIZED') {
+        onAuthExpired?.(err.message);
+      }
+      setErrorNotice(
+        err instanceof Error
+          ? err.message
+          : 'Gagal mengunggah foto ke Vercel Blob. Silakan coba kembali.'
+      );
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) {
@@ -138,14 +169,49 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
     }
   };
 
-  const handleDeleteItem = async (e: React.MouseEvent, id: string) => {
+  const getItemReferences = (itemUrl: string): string[] => {
+    const refs = findMediaReferences(itemUrl, content);
+    if (currentSelectedUrl === itemUrl && refs.length === 0) {
+      return ['Bagian yang sedang dipilih'];
+    }
+    return refs;
+  };
+
+  const handleDeleteItem = async (e: React.MouseEvent, item: MediaItem) => {
     e.stopPropagation();
+    setErrorNotice(null);
+
+    const refs = getItemReferences(item.url);
+    if (refs.length > 0) {
+      setConfirmDeleteId(null);
+      setErrorNotice(
+        `Foto "${item.name}" tidak dapat dihapus karena masih digunakan di: ${refs.join(', ')}. Ganti foto terlebih dahulu.`
+      );
+      return;
+    }
+
+    if (!authToken) {
+      setErrorNotice('Sesi admin dibutuhkan untuk menghapus foto.');
+      onAuthExpired?.('Sesi admin kedaluwarsa. Silakan masuk kembali.');
+      return;
+    }
+
+    setIsDeleting(true);
     try {
-      await deleteMediaItem(id);
+      await deleteMediaItem(item, authToken);
       setConfirmDeleteId(null);
       await loadMedia();
-    } catch {
-      setErrorNotice('Gagal menghapus foto dari database.');
+    } catch (err) {
+      if (err instanceof MediaStorageError && err.code === 'UNAUTHORIZED') {
+        onAuthExpired?.(err.message);
+      }
+      setErrorNotice(
+        err instanceof Error
+          ? err.message
+          : 'Gagal menghapus foto dari Vercel Blob & Firestore.'
+      );
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -166,13 +232,14 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
             <div>
               <h3 className="font-serif text-lg text-[#1F1D1B] font-medium">{title}</h3>
               <p className="text-[11px] text-[#8C827A]">
-                Penyimpanan Cloud Database &amp; cache lokal &bull; {mediaList.length} Foto Tersimpan
+                Penyimpanan Permanen Vercel Blob &amp; Firestore &bull; {mediaList.length} Foto Tersimpan
               </p>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-[#8C827A] hover:text-[#1F1D1B] hover:bg-[#EFE8DC]/50 transition-colors"
+            className="p-1.5 rounded-lg text-[#8C827A] hover:text-[#1F1D1B] hover:bg-[#EFE8DC]/50 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -181,6 +248,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
         {/* Modal Navigation Tabs */}
         <div className="px-6 border-b border-[#EFE8DC] flex gap-6 bg-white">
           <button
+            type="button"
             onClick={() => setActiveTab('my-media')}
             className={`py-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
               activeTab === 'my-media'
@@ -193,6 +261,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={() => setActiveTab('upload')}
             className={`py-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
               activeTab === 'upload'
@@ -201,10 +270,11 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
             }`}
           >
             <Upload className="w-3.5 h-3.5" />
-            <span>Unggah Baru (Drag &amp; Drop)</span>
+            <span>Unggah Baru (Vercel Blob)</span>
           </button>
 
           <button
+            type="button"
             onClick={() => setActiveTab('curated')}
             className={`py-3 text-xs font-medium border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
               activeTab === 'curated'
@@ -231,16 +301,16 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
               <button
                 type="button"
                 onClick={() => setErrorNotice(null)}
-                className="text-red-600 hover:text-red-800 font-semibold cursor-pointer"
+                className="text-red-600 hover:text-red-800 font-semibold cursor-pointer shrink-0"
               >
                 Tutup
               </button>
             </div>
           )}
+
           {/* TAB 1: MY MEDIA */}
           {activeTab === 'my-media' && (
             <div className="space-y-4">
-              {/* Filter & Search Bar */}
               <div className="flex items-center justify-between gap-4">
                 <input
                   type="text"
@@ -262,7 +332,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
               {loading ? (
                 <div className="py-20 text-center flex flex-col items-center justify-center text-[#8C827A] gap-2">
                   <Loader2 className="w-6 h-6 animate-spin text-[#C5A059]" />
-                  <span className="text-xs">Memuat galeri media dari database...</span>
+                  <span className="text-xs">Memuat galeri media dari Cloud Firestore...</span>
                 </div>
               ) : filteredMedia.length === 0 ? (
                 <div className="py-16 text-center border-2 border-dashed border-[#E8DFD3] rounded-2xl bg-white p-8">
@@ -270,11 +340,11 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                     <ImageIcon className="w-6 h-6" />
                   </div>
                   <h4 className="text-sm font-serif font-medium text-[#1F1D1B] mb-1">
-                    Belum Ada Foto Tersimpan di Database
+                    Belum Ada Foto Tersimpan
                   </h4>
                   <p className="text-xs text-[#8C827A] font-light max-w-md mx-auto mb-5">
-                    Unggah foto mempelai atau dokumentasi pernikahan Anda sekarang. Foto akan disimpan
-                    secara permanen di database lokal peramban.
+                    Unggah foto mempelai atau dokumentasi pernikahan Anda. Foto akan disimpan
+                    permanen di Vercel Blob dan langsung dapat diakses dari perangkat mana pun.
                   </p>
                   <button
                     type="button"
@@ -288,6 +358,9 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3.5">
                   {filteredMedia.map((item) => {
                     const isSelected = currentSelectedUrl === item.url;
+                    const refs = getItemReferences(item.url);
+                    const isInUse = refs.length > 0;
+
                     return (
                       <div
                         key={item.id}
@@ -303,8 +376,9 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                       >
                         <div className="aspect-square relative overflow-hidden bg-[#FAF8F5]">
                           <SmartImage
-                            src={item.thumbnailUrl || item.url}
+                            src={item.url}
                             alt={item.name}
+                            optimizeWidth={400}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                           />
                           {isSelected && (
@@ -312,24 +386,36 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                               <Check className="w-3.5 h-3.5" />
                             </div>
                           )}
+                          {isInUse && !isSelected && (
+                            <div
+                              className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-[#242220]/85 text-[#FAF8F5] text-[9px] font-medium flex items-center gap-1"
+                              title={`Sedang dipakai di: ${refs.join(', ')}`}
+                            >
+                              <Lock className="w-2.5 h-2.5 text-[#C5A059]" />
+                              <span>Dipakai</span>
+                            </div>
+                          )}
+
                           {confirmDeleteId === item.id ? (
                             <div
                               onClick={(e) => e.stopPropagation()}
-                              className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center gap-2 p-2 text-center"
+                              className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-2 p-2 text-center"
                             >
                               <span className="text-[10px] font-medium text-white">
-                                Hapus foto ini?
+                                Hapus foto permanen?
                               </span>
                               <div className="flex items-center gap-1.5">
                                 <button
                                   type="button"
-                                  onClick={(e) => handleDeleteItem(e, item.id)}
-                                  className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg text-[10px] font-semibold cursor-pointer"
+                                  disabled={isDeleting}
+                                  onClick={(e) => handleDeleteItem(e, item)}
+                                  className="px-2.5 py-1 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white rounded-lg text-[10px] font-semibold cursor-pointer"
                                 >
-                                  Ya, Hapus
+                                  {isDeleting ? 'Menghapus...' : 'Ya, Hapus'}
                                 </button>
                                 <button
                                   type="button"
+                                  disabled={isDeleting}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setConfirmDeleteId(null);
@@ -349,12 +435,30 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setConfirmDeleteId(item.id);
+                                  if (isInUse) {
+                                    setErrorNotice(
+                                      `Foto "${item.name}" masih digunakan di: ${refs.join(', ')}. Lepaskan atau ganti foto terlebih dahulu.`
+                                    );
+                                  } else {
+                                    setConfirmDeleteId(item.id);
+                                  }
                                 }}
-                                title="Hapus dari database"
-                                className="p-1.5 bg-red-600/90 hover:bg-red-600 text-white rounded-lg transition-colors cursor-pointer"
+                                title={
+                                  isInUse
+                                    ? `Tidak dapat dihapus karena masih digunakan di: ${refs.join(', ')}`
+                                    : 'Hapus permanen dari Vercel Blob & Firestore'
+                                }
+                                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                                  isInUse
+                                    ? 'bg-neutral-700/80 text-neutral-300'
+                                    : 'bg-red-600/90 hover:bg-red-600 text-white'
+                                }`}
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                {isInUse ? (
+                                  <Lock className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                )}
                               </button>
                             </div>
                           )}
@@ -363,7 +467,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                           <p className="text-[11px] font-medium text-[#1F1D1B] truncate">{item.name}</p>
                           <div className="flex items-center justify-between text-[9px] text-[#8C827A] mt-0.5">
                             <span>{item.formattedSize}</span>
-                            <span className="text-[#C5A059] font-medium">Tersimpan</span>
+                            <span className="text-emerald-700 font-medium">Vercel Blob</span>
                           </div>
                         </div>
                       </div>
@@ -400,7 +504,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                 <input
                   type="file"
                   ref={fileInputRef}
-                  accept="image/jpeg,image/png,image/webp,image/jpg"
+                  accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
                   multiple
                   onChange={(e) => {
                     if (e.target.files) handleFileUpload(e.target.files);
@@ -412,10 +516,10 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                   <div className="flex flex-col items-center gap-3 py-6">
                     <Loader2 className="w-8 h-8 animate-spin text-[#C5A059]" />
                     <p className="text-xs font-medium text-[#1F1D1B]">
-                      Menyimpan foto ke database browser (IndexedDB)...
+                      Mengunggah foto permanen ke Vercel Blob &amp; Firestore...
                     </p>
                     <p className="text-[10px] text-[#8C827A]">
-                      Mohon tunggu sebentar, file sedang diproses
+                      Mohon tunggu sebentar hingga file tersimpan di cloud
                     </p>
                   </div>
                 ) : (
@@ -425,15 +529,15 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                     </div>
                     <div>
                       <p className="text-sm font-serif font-medium text-[#1F1D1B]">
-                        Tarik &amp; Lepaskan Foto JPG / PNG ke Sini
+                        Tarik &amp; Lepaskan Foto ke Sini
                       </p>
                       <p className="text-xs text-[#8C827A] mt-1 font-light">
                         atau <span className="text-[#C5A059] font-medium underline">klik untuk mencari file</span> dari komputer/HP Anda
                       </p>
                     </div>
                     <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#FAF8F5] border border-[#E8DFD3] text-[10px] text-[#70675F] mt-2">
-                      <HardDrive className="w-3 h-3 text-[#C5A059]" />
-                      <span>Format: JPG, PNG, WEBP &bull; Disimpan Permanen di Database</span>
+                      <Cloud className="w-3 h-3 text-emerald-600" />
+                      <span>Format: JPG, JPEG, PNG, WebP &bull; Maks. 5 MB &bull; Vercel Blob Permanen</span>
                     </div>
                   </div>
                 )}
@@ -488,9 +592,10 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
         {/* Modal Footer */}
         <div className="px-6 py-3.5 border-t border-[#EFE8DC] bg-[#FAF8F5]/80 flex items-center justify-between text-xs">
           <span className="text-[11px] text-[#8C827A]">
-            Foto dioptimasi WebP &amp; disinkronkan ke Cloud Database agar langsung tampil di semua perangkat tamu.
+            Foto disimpan permanen di Vercel Blob CDN agar langsung tampil di semua perangkat tamu.
           </span>
           <button
+            type="button"
             onClick={onClose}
             className="px-4 py-2 rounded-xl bg-white hover:bg-[#EFE8DC]/50 border border-[#E8DFD3] text-[#242220] font-medium transition-colors cursor-pointer"
           >
